@@ -73,7 +73,7 @@
 46. ✅ **Fallback/Graceful Degradation** (`patterns/35_fallback_graceful_degradation.py`)
 47. ✅ **Circuit Breaker** (`patterns/20_circuit_breaker.py`)
 48. ✅ **Sandboxing** (`patterns/36_sandboxing.py`)
-49. ⬜ **Rate Limiting & Throttling**
+49. ✅ **Rate Limiting & Throttling** (`43_rate_limiting.py`)
 50. ⬜ **Adversarial Testing**
 51. ✅ **Monitoring & Observability** (`patterns/18_monitoring_observability.py`)
 52. ⬜ **Redundancy & Consensus**
@@ -99,7 +99,7 @@
 
 ### Resource Management (1/3)
 
-88. ⬜ **Token Budget Management**
+88. ✅ **Token Budget Management** (`patterns/44_token_budget_management.py`)
 89. ✅ **Caching Patterns** (`patterns/19_caching_patterns.py`)
 90. ⬜ **Load Balancing**
 
