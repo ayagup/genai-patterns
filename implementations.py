@@ -9597,3 +9597,2543 @@ if __name__ == "__main__":
 
 
 
+I'll continue implementing the remaining patterns. Let me create implementations for patterns 35-70 and beyond.
+
+```python patterns/35_fallback_graceful_degradation.py
+"""
+Fallback/Graceful Degradation Pattern
+Alternative strategies when primary approach fails
+"""
+
+from typing import List, Dict, Any, Optional, Callable
+from dataclasses import dataclass
+from enum import Enum
+import time
+
+class FallbackLevel(Enum):
+    PRIMARY = "primary"
+    SECONDARY = "secondary"
+    TERTIARY = "tertiary"
+    EMERGENCY = "emergency"
+    HUMAN_ESCALATION = "human_escalation"
+
+@dataclass
+class FallbackStrategy:
+    """A fallback strategy"""
+    level: FallbackLevel
+    name: str
+    handler: Callable
+    timeout_seconds: float = 5.0
+    max_retries: int = 1
+
+@dataclass
+class ExecutionResult:
+    """Result of execution attempt"""
+    success: bool
+    result: Any
+    level_used: FallbackLevel
+    error: Optional[str] = None
+    latency_ms: float = 0.0
+
+class FallbackAgent:
+    """Agent with graceful degradation"""
+    
+    def __init__(self, agent_id: str):
+        self.agent_id = agent_id
+        self.strategies: List[FallbackStrategy] = []
+        self.execution_history: List[ExecutionResult] = []
+    
+    def register_strategy(self, strategy: FallbackStrategy):
+        """Register a fallback strategy"""
+        self.strategies.append(strategy)
+        # Sort by level priority
+        self.strategies.sort(key=lambda s: list(FallbackLevel).index(s.level))
+        print(f"Registered {strategy.level.value} strategy: {strategy.name}")
+    
+    def execute_with_fallback(self, task: str, context: Dict[str, Any] = None) -> ExecutionResult:
+        """Execute task with fallback strategies"""
+        print(f"\n{'='*70}")
+        print(f"EXECUTING WITH FALLBACK")
+        print(f"{'='*70}")
+        print(f"Task: {task}\n")
+        
+        context = context or {}
+        
+        for strategy in self.strategies:
+            print(f"\n--- Trying {strategy.level.value}: {strategy.name} ---")
+            
+            for attempt in range(strategy.max_retries):
+                if attempt > 0:
+                    print(f"  Retry {attempt + 1}/{strategy.max_retries}")
+                
+                start_time = time.time()
+                
+                try:
+                    # Execute strategy with timeout
+                    result = self._execute_with_timeout(
+                        strategy.handler,
+                        task,
+                        context,
+                        strategy.timeout_seconds
+                    )
+                    
+                    latency_ms = (time.time() - start_time) * 1000
+                    
+                    print(f"  ✓ Success in {latency_ms:.0f}ms")
+                    
+                    execution_result = ExecutionResult(
+                        success=True,
+                        result=result,
+                        level_used=strategy.level,
+                        latency_ms=latency_ms
+                    )
+                    
+                    self.execution_history.append(execution_result)
+                    return execution_result
+                    
+                except TimeoutError as e:
+                    print(f"  ⏱ Timeout after {strategy.timeout_seconds}s")
+                    if attempt < strategy.max_retries - 1:
+                        continue
+                    
+                except Exception as e:
+                    print(f"  ✗ Failed: {str(e)}")
+                    if attempt < strategy.max_retries - 1:
+                        continue
+            
+            print(f"  ⚠ {strategy.name} exhausted all retries")
+        
+        # All strategies failed
+        print(f"\n✗ All fallback strategies failed")
+        
+        result = ExecutionResult(
+            success=False,
+            result=None,
+            level_used=FallbackLevel.HUMAN_ESCALATION,
+            error="All fallback strategies exhausted"
+        )
+        
+        self.execution_history.append(result)
+        return result
+    
+    def _execute_with_timeout(self, handler: Callable, task: str, 
+                              context: Dict[str, Any], timeout: float) -> Any:
+        """Execute handler with timeout"""
+        import signal
+        
+        def timeout_handler(signum, frame):
+            raise TimeoutError(f"Execution exceeded {timeout}s")
+        
+        # Set timeout alarm (Unix only - for demo)
+        # In production, use threading.Timer or asyncio.wait_for
+        try:
+            # Simple timeout simulation
+            start = time.time()
+            result = handler(task, context)
+            elapsed = time.time() - start
+            
+            if elapsed > timeout:
+                raise TimeoutError(f"Execution exceeded {timeout}s")
+            
+            return result
+        except Exception as e:
+            raise e
+    
+    def get_statistics(self) -> Dict[str, Any]:
+        """Get fallback statistics"""
+        if not self.execution_history:
+            return {"total_executions": 0}
+        
+        total = len(self.execution_history)
+        successful = sum(1 for r in self.execution_history if r.success)
+        
+        level_usage = {}
+        for result in self.execution_history:
+            level = result.level_used.value
+            level_usage[level] = level_usage.get(level, 0) + 1
+        
+        avg_latency = sum(r.latency_ms for r in self.execution_history if r.success) / max(successful, 1)
+        
+        return {
+            'total_executions': total,
+            'successful': successful,
+            'failed': total - successful,
+            'success_rate': successful / total,
+            'level_usage': level_usage,
+            'avg_latency_ms': avg_latency
+        }
+
+
+# Example strategy handlers
+def primary_strategy(task: str, context: Dict[str, Any]) -> str:
+    """Primary high-quality but slow strategy"""
+    import random
+    time.sleep(0.3)
+    
+    # 70% success rate
+    if random.random() < 0.7:
+        return f"High-quality result for: {task}"
+    else:
+        raise Exception("Primary strategy failed")
+
+def secondary_strategy(task: str, context: Dict[str, Any]) -> str:
+    """Secondary faster but lower quality"""
+    import random
+    time.sleep(0.1)
+    
+    # 80% success rate
+    if random.random() < 0.8:
+        return f"Good result for: {task}"
+    else:
+        raise Exception("Secondary strategy failed")
+
+def tertiary_strategy(task: str, context: Dict[str, Any]) -> str:
+    """Tertiary very fast, basic quality"""
+    time.sleep(0.05)
+    
+    # 95% success rate
+    if random.random() < 0.95:
+        return f"Basic result for: {task}"
+    else:
+        raise Exception("Tertiary strategy failed")
+
+def emergency_strategy(task: str, context: Dict[str, Any]) -> str:
+    """Emergency always-works fallback"""
+    return f"Emergency fallback result for: {task}"
+
+
+# Usage
+if __name__ == "__main__":
+    print("="*80)
+    print("FALLBACK/GRACEFUL DEGRADATION PATTERN DEMONSTRATION")
+    print("="*80)
+    
+    agent = FallbackAgent("fallback-agent-001")
+    
+    # Register strategies in priority order
+    agent.register_strategy(FallbackStrategy(
+        level=FallbackLevel.PRIMARY,
+        name="Advanced AI Model",
+        handler=primary_strategy,
+        timeout_seconds=1.0,
+        max_retries=2
+    ))
+    
+    agent.register_strategy(FallbackStrategy(
+        level=FallbackLevel.SECONDARY,
+        name="Standard AI Model",
+        handler=secondary_strategy,
+        timeout_seconds=0.5,
+        max_retries=2
+    ))
+    
+    agent.register_strategy(FallbackStrategy(
+        level=FallbackLevel.TERTIARY,
+        name="Fast Basic Model",
+        handler=tertiary_strategy,
+        timeout_seconds=0.2,
+        max_retries=1
+    ))
+    
+    agent.register_strategy(FallbackStrategy(
+        level=FallbackLevel.EMERGENCY,
+        name="Template Response",
+        handler=emergency_strategy,
+        timeout_seconds=0.1,
+        max_retries=1
+    ))
+    
+    # Test with multiple tasks
+    tasks = [
+        "Analyze customer sentiment",
+        "Generate product description",
+        "Summarize document",
+        "Translate text",
+        "Answer question"
+    ]
+    
+    for task in tasks:
+        result = agent.execute_with_fallback(task)
+        
+        print(f"\n{'='*60}")
+        print(f"RESULT")
+        print(f"{'='*60}")
+        print(f"Success: {result.success}")
+        print(f"Level Used: {result.level_used.value}")
+        if result.success:
+            print(f"Result: {result.result}")
+            print(f"Latency: {result.latency_ms:.0f}ms")
+        print()
+    
+    # Statistics
+    stats = agent.get_statistics()
+    
+    print(f"\n{'='*70}")
+    print("FALLBACK STATISTICS")
+    print(f"{'='*70}")
+    print(f"Total Executions: {stats['total_executions']}")
+    print(f"Successful: {stats['successful']}")
+    print(f"Failed: {stats['failed']}")
+    print(f"Success Rate: {stats['success_rate']:.1%}")
+    print(f"Average Latency: {stats['avg_latency_ms']:.0f}ms")
+    
+    print(f"\nLevel Usage:")
+    for level, count in stats['level_usage'].items():
+        percentage = (count / stats['total_executions']) * 100
+        print(f"  {level}: {count} ({percentage:.1f}%)")
+```
+
+```python patterns/36_sandboxing.py
+"""
+Sandboxing Pattern
+Executes agent actions in isolated environment
+"""
+
+from typing import Dict, Any, List, Optional
+from dataclasses import dataclass
+from enum import Enum
+import subprocess
+import tempfile
+import os
+import json
+
+class SandboxType(Enum):
+    PROCESS = "process"
+    DOCKER = "docker"
+    VM = "virtual_machine"
+    RESTRICTED_PYTHON = "restricted_python"
+
+@dataclass
+class SandboxConfig:
+    """Configuration for sandbox"""
+    sandbox_type: SandboxType
+    memory_limit_mb: int = 512
+    cpu_limit_percent: int = 50
+    timeout_seconds: int = 5
+    network_enabled: bool = False
+    allowed_modules: List[str] = None
+    
+    def __post_init__(self):
+        if self.allowed_modules is None:
+            self.allowed_modules = ['math', 'json', 'datetime']
+
+@dataclass
+class SandboxResult:
+    """Result from sandbox execution"""
+    success: bool
+    output: Any
+    error: Optional[str] = None
+    stdout: str = ""
+    stderr: str = ""
+    execution_time_ms: float = 0.0
+    memory_used_mb: float = 0.0
+
+class Sandbox:
+    """Isolated execution environment"""
+    
+    def __init__(self, config: SandboxConfig):
+        self.config = config
+        self.execution_count = 0
+    
+    def execute(self, code: str, context: Dict[str, Any] = None) -> SandboxResult:
+        """Execute code in sandbox"""
+        self.execution_count += 1
+        
+        print(f"\n{'='*60}")
+        print(f"SANDBOX EXECUTION #{self.execution_count}")
+        print(f"{'='*60}")
+        print(f"Type: {self.config.sandbox_type.value}")
+        print(f"Memory Limit: {self.config.memory_limit_mb}MB")
+        print(f"Timeout: {self.config.timeout_seconds}s")
+        print(f"\nCode to execute:")
+        print("-" * 60)
+        print(code)
+        print("-" * 60)
+        
+        if self.config.sandbox_type == SandboxType.RESTRICTED_PYTHON:
+            return self._execute_restricted_python(code, context)
+        elif self.config.sandbox_type == SandboxType.PROCESS:
+            return self._execute_in_process(code, context)
+        else:
+            return SandboxResult(
+                success=False,
+                output=None,
+                error=f"Sandbox type {self.config.sandbox_type.value} not implemented"
+            )
+    
+    def _execute_restricted_python(self, code: str, context: Dict[str, Any]) -> SandboxResult:
+        """Execute Python code with restrictions"""
+        import time
+        
+        start_time = time.time()
+        
+        # Create restricted globals
+        restricted_globals = {
+            '__builtins__': {
+                'print': print,
+                'len': len,
+                'range': range,
+                'str': str,
+                'int': int,
+                'float': float,
+                'list': list,
+                'dict': dict,
+                'sum': sum,
+                'min': min,
+                'max': max,
+            }
+        }
+        
+        # Add allowed modules
+        for module_name in self.config.allowed_modules:
+            try:
+                restricted_globals[module_name] = __import__(module_name)
+            except ImportError:
+                pass
+        
+        # Add context
+        if context:
+            restricted_globals.update(context)
+        
+        # Capture output
+        import io
+        import sys
+        
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        stdout_capture = io.StringIO()
+        stderr_capture = io.StringIO()
+        
+        try:
+            sys.stdout = stdout_capture
+            sys.stderr = stderr_capture
+            
+            # Execute with timeout (simplified)
+            local_vars = {}
+            exec(code, restricted_globals, local_vars)
+            
+            execution_time = (time.time() - start_time) * 1000
+            
+            # Get output
+            stdout = stdout_capture.getvalue()
+            stderr = stderr_capture.getvalue()
+            
+            # Get result
+            result = local_vars.get('result', stdout or "Execution completed")
+            
+            print(f"\n✓ Execution successful ({execution_time:.0f}ms)")
+            if stdout:
+                print(f"Output: {stdout}")
+            
+            return SandboxResult(
+                success=True,
+                output=result,
+                stdout=stdout,
+                stderr=stderr,
+                execution_time_ms=execution_time
+            )
+            
+        except Exception as e:
+            execution_time = (time.time() - start_time) * 1000
+            
+            print(f"\n✗ Execution failed: {str(e)}")
+            
+            return SandboxResult(
+                success=False,
+                output=None,
+                error=str(e),
+                stdout=stdout_capture.getvalue(),
+                stderr=stderr_capture.getvalue(),
+                execution_time_ms=execution_time
+            )
+        finally:
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+    
+    def _execute_in_process(self, code: str, context: Dict[str, Any]) -> SandboxResult:
+        """Execute in separate process"""
+        import time
+        
+        start_time = time.time()
+        
+        # Create temporary file with code
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+            f.write(code)
+            temp_file = f.name
+        
+        try:
+            # Execute in subprocess with timeout
+            result = subprocess.run(
+                ['python', temp_file],
+                capture_output=True,
+                text=True,
+                timeout=self.config.timeout_seconds
+            )
+            
+            execution_time = (time.time() - start_time) * 1000
+            
+            success = result.returncode == 0
+            
+            if success:
+                print(f"\n✓ Process execution successful ({execution_time:.0f}ms)")
+            else:
+                print(f"\n✗ Process execution failed (exit code: {result.returncode})")
+            
+            return SandboxResult(
+                success=success,
+                output=result.stdout,
+                error=result.stderr if not success else None,
+                stdout=result.stdout,
+                stderr=result.stderr,
+                execution_time_ms=execution_time
+            )
+            
+        except subprocess.TimeoutExpired:
+            print(f"\n✗ Execution timeout after {self.config.timeout_seconds}s")
+            
+            return SandboxResult(
+                success=False,
+                output=None,
+                error=f"Timeout after {self.config.timeout_seconds}s"
+            )
+        finally:
+            # Cleanup
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+
+class SandboxedAgent:
+    """Agent that executes code in sandbox"""
+    
+    def __init__(self, agent_id: str):
+        self.agent_id = agent_id
+        self.sandbox = Sandbox(SandboxConfig(
+            sandbox_type=SandboxType.RESTRICTED_PYTHON,
+            memory_limit_mb=256,
+            timeout_seconds=3,
+            allowed_modules=['math', 'json', 'datetime', 'random']
+        ))
+        self.execution_history: List[SandboxResult] = []
+    
+    def execute_user_code(self, code: str, context: Dict[str, Any] = None) -> Dict[str, Any]:
+        """Execute user-provided code safely"""
+        print(f"\n{'='*70}")
+        print(f"SANDBOXED CODE EXECUTION")
+        print(f"{'='*70}")
+        
+        # Validate code first
+        if not self._validate_code(code):
+            return {
+                'success': False,
+                'error': 'Code validation failed: contains prohibited operations'
+            }
+        
+        # Execute in sandbox
+        result = self.sandbox.execute(code, context)
+        self.execution_history.append(result)
+        
+        return {
+            'success': result.success,
+            'output': result.output,
+            'error': result.error,
+            'execution_time_ms': result.execution_time_ms
+        }
+    
+    def _validate_code(self, code: str) -> bool:
+        """Validate code for dangerous operations"""
+        prohibited = [
+            'import os',
+            'import sys',
+            'import subprocess',
+            '__import__',
+            'eval',
+            'exec',
+            'open',
+            'file',
+            'input',
+            'raw_input',
+        ]
+        
+        code_lower = code.lower()
+        
+        for prohibited_item in prohibited:
+            if prohibited_item in code_lower:
+                print(f"⚠️  Validation failed: contains '{prohibited_item}'")
+                return False
+        
+        return True
+    
+    def get_statistics(self) -> Dict[str, Any]:
+        """Get execution statistics"""
+        if not self.execution_history:
+            return {'total_executions': 0}
+        
+        total = len(self.execution_history)
+        successful = sum(1 for r in self.execution_history if r.success)
+        
+        avg_time = sum(r.execution_time_ms for r in self.execution_history) / total
+        
+        return {
+            'total_executions': total,
+            'successful': successful,
+            'failed': total - successful,
+            'success_rate': successful / total,
+            'avg_execution_time_ms': avg_time
+        }
+
+
+# Usage
+if __name__ == "__main__":
+    print("="*80)
+    print("SANDBOXING PATTERN DEMONSTRATION")
+    print("="*80)
+    
+    agent = SandboxedAgent("sandbox-agent-001")
+    
+    # Test Case 1: Safe code
+    print("\n" + "="*80)
+    print("TEST 1: Safe Mathematical Calculation")
+    print("="*80)
+    
+    safe_code = """
+import math
+
+def calculate():
+    result = math.sqrt(16) + math.pi
+    print(f"Result: {result}")
+    return result
+
+result = calculate()
+"""
+    
+    result1 = agent.execute_user_code(safe_code)
+    print(f"\nResult: {result1}")
+    
+    # Test Case 2: Prohibited code
+    print("\n\n" + "="*80)
+    print("TEST 2: Dangerous Code (should be blocked)")
+    print("="*80)
+    
+    dangerous_code = """
+import os
+os.system('rm -rf /')  # Dangerous!
+"""
+    
+    result2 = agent.execute_user_code(dangerous_code)
+    print(f"\nResult: {result2}")
+    
+    # Test Case 3: Code with context
+    print("\n\n" + "="*80)
+    print("TEST 3: Code with Context Variables")
+    print("="*80)
+    
+    context_code = """
+# Use provided context
+total = sum(numbers)
+average = total / len(numbers)
+result = {'total': total, 'average': average}
+print(f"Numbers: {numbers}")
+print(f"Total: {total}, Average: {average}")
+"""
+    
+    result3 = agent.execute_user_code(
+        context_code,
+        context={'numbers': [1, 2, 3, 4, 5]}
+    )
+    print(f"\nResult: {result3}")
+    
+    # Test Case 4: Timeout
+    print("\n\n" + "="*80)
+    print("TEST 4: Infinite Loop (should timeout)")
+    print("="*80)
+    
+    timeout_code = """
+while True:
+    pass
+"""
+    
+    result4 = agent.execute_user_code(timeout_code)
+    print(f"\nResult: {result4}")
+    
+    # Statistics
+    stats = agent.get_statistics()
+    
+    print(f"\n{'='*70}")
+    print("EXECUTION STATISTICS")
+    print(f"{'='*70}")
+    print(f"Total Executions: {stats['total_executions']}")
+    print(f"Successful: {stats['successful']}")
+    print(f"Failed: {stats['failed']}")
+    print(f"Success Rate: {stats['success_rate']:.1%}")
+    print(f"Avg Execution Time: {stats['avg_execution_time_ms']:.0f}ms")
+```
+
+```python patterns/37_chain_of_verification.py
+"""
+Chain-of-Verification (CoVe) Pattern
+Generates verification questions to check answers
+"""
+
+from typing import List, Dict, Any, Optional
+from dataclasses import dataclass
+
+@dataclass
+class VerificationQuestion:
+    """A question to verify the answer"""
+    question: str
+    expected_answer: str
+    actual_answer: Optional[str] = None
+    is_correct: bool = False
+
+@dataclass
+class VerificationResult:
+    """Result of verification process"""
+    original_answer: str
+    verification_questions: List[VerificationQuestion]
+    verification_score: float
+    revised_answer: Optional[str] = None
+    is_verified: bool = False
+
+class ChainOfVerificationAgent:
+    """Agent that verifies answers through questioning"""
+    
+    def __init__(self, agent_id: str, verification_threshold: float = 0.8):
+        self.agent_id = agent_id
+        self.verification_threshold = verification_threshold
+        self.verification_history: List[VerificationResult] = []
+    
+    def answer_with_verification(self, question: str) -> Dict[str, Any]:
+        """Answer question with verification"""
+        print(f"\n{'='*70}")
+        print(f"CHAIN-OF-VERIFICATION")
+        print(f"{'='*70}")
+        print(f"Question: {question}\n")
+        
+        # Step 1: Generate initial answer
+        print("Step 1: Generating initial answer...")
+        initial_answer = self._generate_answer(question)
+        print(f"Initial Answer: {initial_answer}\n")
+        
+        # Step 2: Generate verification questions
+        print("Step 2: Generating verification questions...")
+        verification_questions = self._generate_verification_questions(
+            question, initial_answer
+        )
+        
+        print(f"Generated {len(verification_questions)} verification questions:")
+        for i, vq in enumerate(verification_questions, 1):
+            print(f"  {i}. {vq.question}")
+        print()
+        
+        # Step 3: Answer verification questions
+        print("Step 3: Answering verification questions...")
+        for vq in verification_questions:
+            vq.actual_answer = self._answer_verification_question(vq.question)
+            vq.is_correct = self._check_answer(vq.expected_answer, vq.actual_answer)
+            
+            status = "✓" if vq.is_correct else "✗"
+            print(f"  {status} {vq.question}")
+            print(f"    Expected: {vq.expected_answer}")
+            print(f"    Got: {vq.actual_answer}")
+        print()
+        
+        # Step 4: Calculate verification score
+        correct_count = sum(1 for vq in verification_questions if vq.is_correct)
+        verification_score = correct_count / len(verification_questions) if verification_questions else 0
+        
+        print(f"Step 4: Verification score: {verification_score:.1%}")
+        
+        # Step 5: Revise if needed
+        revised_answer = None
+        is_verified = verification_score >= self.verification_threshold
+        
+        if not is_verified:
+            print("\nStep 5: Verification failed, revising answer...")
+            revised_answer = self._revise_answer(
+                question, 
+                initial_answer, 
+                verification_questions
+            )
+            print(f"Revised Answer: {revised_answer}")
+            final_answer = revised_answer
+        else:
+            print("\nStep 5: Verification passed!")
+            final_answer = initial_answer
+        
+        # Store result
+        result = VerificationResult(
+            original_answer=initial_answer,
+            verification_questions=verification_questions,
+            verification_score=verification_score,
+            revised_answer=revised_answer,
+            is_verified=is_verified
+        )
+        
+        self.verification_history.append(result)
+        
+        print(f"\n{'='*70}")
+        print("FINAL RESULT")
+        print(f"{'='*70}")
+        print(f"Verified: {is_verified}")
+        print(f"Score: {verification_score:.1%}")
+        print(f"Final Answer: {final_answer}")
+        
+        return {
+            'question': question,
+            'answer': final_answer,
+            'verified': is_verified,
+            'verification_score': verification_score,
+            'was_revised': revised_answer is not None
+        }
+    
+    def _generate_answer(self, question: str) -> str:
+        """Generate initial answer (simulated)"""
+        # In reality, this would call an LLM
+        import random
+        
+        if "capital" in question.lower():
+            # Intentionally sometimes wrong for demonstration
+            capitals = {
+                "france": ["Paris", "Lyon"],  # Lyon is wrong
+                "spain": ["Madrid", "Barcelona"],
+                "italy": ["Rome", "Milan"]
+            }
+            
+            for country, options in capitals.items():
+                if country in question.lower():
+                    return random.choice(options)
+        
+        return "Generic answer to the question"
+    
+    def _generate_verification_questions(self, question: str, answer: str) -> List[VerificationQuestion]:
+        """Generate questions to verify the answer"""
+        verification_questions = []
+        
+        # Fact-checking questions
+        if "capital" in question.lower() and "france" in question.lower():
+            verification_questions.extend([
+                VerificationQuestion(
+                    question="Is Paris the capital of France?",
+                    expected_answer="Yes"
+                ),
+                VerificationQuestion(
+                    question="What country is Paris the capital of?",
+                    expected_answer="France"
+                ),
+                VerificationQuestion(
+                    question="Is Lyon the capital of France?",
+                    expected_answer="No"
+                )
+            ])
+        else:
+            # Generic verification questions
+            verification_questions.extend([
+                VerificationQuestion(
+                    question=f"Is '{answer}' a correct answer to '{question}'?",
+                    expected_answer="Yes"
+                ),
+                VerificationQuestion(
+                    question=f"Can you explain why '{answer}' is correct?",
+                    expected_answer="Valid explanation"
+                )
+            ])
+        
+        return verification_questions
+    
+    def _answer_verification_question(self, question: str) -> str:
+        """Answer a verification question"""
+        # Simulated answering (would use LLM)
+        question_lower = question.lower()
+        
+        if "is paris the capital of france" in question_lower:
+            return "Yes"
+        elif "what country is paris" in question_lower:
+            return "France"
+        elif "is lyon the capital" in question_lower:
+            return "No"
+        elif "is correct" in question_lower:
+            return "Yes"
+        else:
+            return "Valid explanation provided"
+    
+    def _check_answer(self, expected: str, actual: str) -> bool:
+        """Check if answer matches expectation"""
+        # Simple check (in reality, would use semantic similarity)
+        expected_lower = expected.lower()
+        actual_lower = actual.lower()
+        
+        # Check for key words
+        if "yes" in expected_lower:
+            return "yes" in actual_lower
+        elif "no" in expected_lower:
+            return "no" in actual_lower
+        else:
+            # Check for overlap
+            expected_words = set(expected_lower.split())
+            actual_words = set(actual_lower.split())
+            overlap = expected_words & actual_words
+            return len(overlap) > 0
+    
+    def _revise_answer(self, question: str, initial_answer: str, 
+                       verification_questions: List[VerificationQuestion]) -> str:
+        """Revise answer based on verification failures"""
+        # Analyze failures
+        failed_questions = [vq for vq in verification_questions if not vq.is_correct]
+        
+        print(f"  Analyzing {len(failed_questions)} failed verifications...")
+        
+        # Generate revised answer
+        # In reality, would use LLM with failed verification context
+        if "capital" in question.lower():
+            return "Paris (revised based on verification)"
+        else:
+            return f"{initial_answer} (revised)"
+    
+    def get_statistics(self) -> Dict[str, Any]:
+        """Get verification statistics"""
+        if not self.verification_history:
+            return {'total_verifications': 0}
+        
+        total = len(self.verification_history)
+        verified = sum(1 for r in self.verification_history if r.is_verified)
+        revised = sum(1 for r in self.verification_history if r.revised_answer is not None)
+        
+        avg_score = sum(r.verification_score for r in self.verification_history) / total
+        
+        return {
+            'total_verifications': total,
+            'verified_count': verified,
+            'revised_count': revised,
+            'verification_rate': verified / total,
+            'revision_rate': revised / total,
+            'avg_verification_score': avg_score
+        }
+
+
+# Usage
+if __name__ == "__main__":
+    print("="*80)
+    print("CHAIN-OF-VERIFICATION PATTERN DEMONSTRATION")
+    print("="*80)
+    
+    agent = ChainOfVerificationAgent("cove-agent-001", verification_threshold=0.7)
+    
+    # Test questions
+    questions = [
+        "What is the capital of France?",
+        "Who wrote Romeo and Juliet?",
+        "What is 2 + 2?",
+    ]
+    
+```python patterns/37_chain_of_verification.py
+# ... continuing from where we left off
+
+    for question in questions:
+        result = agent.answer_with_verification(question)
+        print("\n" + "="*80 + "\n")
+    
+    # Statistics
+    stats = agent.get_statistics()
+    
+    print("="*80)
+    print("VERIFICATION STATISTICS")
+    print("="*80)
+    print(f"Total Verifications: {stats['total_verifications']}")
+    print(f"Verified: {stats['verified_count']}")
+    print(f"Revised: {stats['revised_count']}")
+    print(f"Verification Rate: {stats['verification_rate']:.1%}")
+    print(f"Revision Rate: {stats['revision_rate']:.1%}")
+    print(f"Avg Verification Score: {stats['avg_verification_score']:.1%}")
+```
+
+```python patterns/38_progressive_optimization.py
+"""
+Progressive Optimization Pattern
+Iteratively optimizes solution through generations
+"""
+
+from typing import List, Dict, Any, Callable, Optional
+from dataclasses import dataclass
+from enum import Enum
+import random
+
+class OptimizationMethod(Enum):
+    HILL_CLIMBING = "hill_climbing"
+    SIMULATED_ANNEALING = "simulated_annealing"
+    GENETIC_ALGORITHM = "genetic_algorithm"
+    GRADIENT_DESCENT = "gradient_descent"
+
+@dataclass
+class Solution:
+    """A candidate solution"""
+    id: int
+    parameters: Dict[str, float]
+    fitness: float
+    generation: int
+
+@dataclass
+class OptimizationResult:
+    """Result of optimization process"""
+    best_solution: Solution
+    all_solutions: List[Solution]
+    generations: int
+    convergence_history: List[float]
+
+class ProgressiveOptimizer:
+    """Optimizer using progressive refinement"""
+    
+    def __init__(self, objective_function: Callable, method: OptimizationMethod = OptimizationMethod.HILL_CLIMBING):
+        self.objective_function = objective_function
+        self.method = method
+        self.solution_counter = 0
+    
+    def optimize(self, initial_params: Dict[str, float], 
+                 max_generations: int = 50,
+                 population_size: int = 10) -> OptimizationResult:
+        """Run progressive optimization"""
+        print(f"\n{'='*70}")
+        print(f"PROGRESSIVE OPTIMIZATION")
+        print(f"{'='*70}")
+        print(f"Method: {self.method.value}")
+        print(f"Max Generations: {max_generations}")
+        print(f"Initial Parameters: {initial_params}\n")
+        
+        if self.method == OptimizationMethod.HILL_CLIMBING:
+            return self._hill_climbing(initial_params, max_generations)
+        elif self.method == OptimizationMethod.SIMULATED_ANNEALING:
+            return self._simulated_annealing(initial_params, max_generations)
+        elif self.method == OptimizationMethod.GENETIC_ALGORITHM:
+            return self._genetic_algorithm(initial_params, max_generations, population_size)
+        else:
+            raise ValueError(f"Method {self.method} not implemented")
+    
+    def _hill_climbing(self, initial_params: Dict[str, float], max_generations: int) -> OptimizationResult:
+        """Hill climbing optimization"""
+        current = self._create_solution(initial_params, 0)
+        best = current
+        all_solutions = [current]
+        convergence_history = [current.fitness]
+        
+        print("Starting Hill Climbing Optimization\n")
+        
+        for generation in range(1, max_generations):
+            # Generate neighbors
+            neighbors = self._generate_neighbors(current, generation)
+            
+            # Find best neighbor
+            best_neighbor = max(neighbors, key=lambda s: s.fitness)
+            
+            # Only move if neighbor is better
+            if best_neighbor.fitness > current.fitness:
+                current = best_neighbor
+                improvement = best_neighbor.fitness - convergence_history[-1]
+                print(f"Generation {generation}: Fitness={current.fitness:.4f} (↑{improvement:.4f})")
+                
+                if current.fitness > best.fitness:
+                    best = current
+            else:
+                print(f"Generation {generation}: No improvement (stuck at {current.fitness:.4f})")
+            
+            all_solutions.extend(neighbors)
+            convergence_history.append(current.fitness)
+            
+            # Early stopping if no improvement for several generations
+            if len(convergence_history) > 10:
+                recent = convergence_history[-10:]
+                if all(abs(x - recent[0]) < 0.0001 for x in recent):
+                    print(f"\nConverged at generation {generation}")
+                    break
+        
+        return OptimizationResult(
+            best_solution=best,
+            all_solutions=all_solutions,
+            generations=generation,
+            convergence_history=convergence_history
+        )
+    
+    def _simulated_annealing(self, initial_params: Dict[str, float], max_generations: int) -> OptimizationResult:
+        """Simulated annealing optimization"""
+        import math
+        
+        current = self._create_solution(initial_params, 0)
+        best = current
+        all_solutions = [current]
+        convergence_history = [current.fitness]
+        
+        temperature = 1.0
+        cooling_rate = 0.95
+        
+        print("Starting Simulated Annealing Optimization\n")
+        
+        for generation in range(1, max_generations):
+            # Generate random neighbor
+            neighbors = self._generate_neighbors(current, generation, count=1)
+            neighbor = neighbors[0]
+            
+            # Calculate acceptance probability
+            delta = neighbor.fitness - current.fitness
+            
+            if delta > 0:
+                # Better solution - always accept
+                current = neighbor
+                accept = True
+            else:
+                # Worse solution - accept with probability
+                probability = math.exp(delta / temperature)
+                accept = random.random() < probability
+                if accept:
+                    current = neighbor
+            
+            if current.fitness > best.fitness:
+                best = current
+            
+            status = "✓ Accepted" if accept else "✗ Rejected"
+            print(f"Generation {generation}: Fitness={current.fitness:.4f}, Temp={temperature:.3f} - {status}")
+            
+            all_solutions.append(neighbor)
+            convergence_history.append(current.fitness)
+            
+            # Cool down
+            temperature *= cooling_rate
+        
+        return OptimizationResult(
+            best_solution=best,
+            all_solutions=all_solutions,
+            generations=max_generations,
+            convergence_history=convergence_history
+        )
+    
+    def _genetic_algorithm(self, initial_params: Dict[str, float], 
+                           max_generations: int, population_size: int) -> OptimizationResult:
+        """Genetic algorithm optimization"""
+        # Initialize population
+        population = [
+            self._create_solution(
+                self._mutate_params(initial_params, 0.3),
+                0
+            )
+            for _ in range(population_size)
+        ]
+        
+        best = max(population, key=lambda s: s.fitness)
+        all_solutions = list(population)
+        convergence_history = [best.fitness]
+        
+        print("Starting Genetic Algorithm Optimization\n")
+        print(f"Initial Population: {population_size} solutions")
+        print(f"Best Initial Fitness: {best.fitness:.4f}\n")
+        
+        for generation in range(1, max_generations):
+            # Selection
+            population.sort(key=lambda s: s.fitness, reverse=True)
+            survivors = population[:population_size // 2]
+            
+            # Crossover and mutation
+            offspring = []
+            while len(offspring) < population_size - len(survivors):
+                parent1 = random.choice(survivors)
+                parent2 = random.choice(survivors)
+                
+                child_params = self._crossover(parent1.parameters, parent2.parameters)
+                child_params = self._mutate_params(child_params, 0.1)
+                
+                child = self._create_solution(child_params, generation)
+                offspring.append(child)
+            
+            # New population
+            population = survivors + offspring
+            
+            # Track best
+            gen_best = max(population, key=lambda s: s.fitness)
+            if gen_best.fitness > best.fitness:
+                improvement = gen_best.fitness - best.fitness
+                print(f"Generation {generation}: Best={gen_best.fitness:.4f} (↑{improvement:.4f}) - NEW BEST!")
+                best = gen_best
+            else:
+                print(f"Generation {generation}: Best={gen_best.fitness:.4f}")
+            
+            all_solutions.extend(population)
+            convergence_history.append(best.fitness)
+        
+        return OptimizationResult(
+            best_solution=best,
+            all_solutions=all_solutions,
+            generations=max_generations,
+            convergence_history=convergence_history
+        )
+    
+    def _create_solution(self, parameters: Dict[str, float], generation: int) -> Solution:
+        """Create a solution and evaluate it"""
+        fitness = self.objective_function(parameters)
+        
+        self.solution_counter += 1
+        return Solution(
+            id=self.solution_counter,
+            parameters=parameters.copy(),
+            fitness=fitness,
+            generation=generation
+        )
+    
+    def _generate_neighbors(self, solution: Solution, generation: int, count: int = 5) -> List[Solution]:
+        """Generate neighboring solutions"""
+        neighbors = []
+        
+        for _ in range(count):
+            # Small random perturbation
+            new_params = self._mutate_params(solution.parameters, 0.1)
+            neighbor = self._create_solution(new_params, generation)
+            neighbors.append(neighbor)
+        
+        return neighbors
+    
+    def _mutate_params(self, parameters: Dict[str, float], mutation_rate: float) -> Dict[str, float]:
+        """Mutate parameters"""
+        mutated = {}
+        
+        for key, value in parameters.items():
+            if random.random() < mutation_rate:
+                # Apply random change
+                change = random.gauss(0, 0.1)
+                mutated[key] = max(-1.0, min(1.0, value + change))  # Clamp to [-1, 1]
+            else:
+                mutated[key] = value
+        
+        return mutated
+    
+    def _crossover(self, params1: Dict[str, float], params2: Dict[str, float]) -> Dict[str, float]:
+        """Crossover two parameter sets"""
+        child = {}
+        
+        for key in params1.keys():
+            # Random mix of parents
+            if random.random() < 0.5:
+                child[key] = params1[key]
+            else:
+                child[key] = params2[key]
+        
+        return child
+
+
+# Example objective functions
+def sphere_function(params: Dict[str, float]) -> float:
+    """Simple sphere function (minimize sum of squares)"""
+    # Return negative because we're maximizing
+    return -sum(x**2 for x in params.values())
+
+def rastrigin_function(params: Dict[str, float]) -> float:
+    """Rastrigin function (harder to optimize)"""
+    import math
+    A = 10
+    n = len(params)
+    return -(A * n + sum(x**2 - A * math.cos(2 * math.pi * x) for x in params.values()))
+
+
+# Usage
+if __name__ == "__main__":
+    print("="*80)
+    print("PROGRESSIVE OPTIMIZATION PATTERN DEMONSTRATION")
+    print("="*80)
+    
+    # Initial parameters
+    initial = {'x': 0.5, 'y': 0.5, 'z': 0.5}
+    
+    # Example 1: Hill Climbing
+    print("\n" + "="*80)
+    print("EXAMPLE 1: Hill Climbing")
+    print("="*80)
+    
+    optimizer1 = ProgressiveOptimizer(sphere_function, OptimizationMethod.HILL_CLIMBING)
+    result1 = optimizer1.optimize(initial, max_generations=30)
+    
+    print(f"\n{'='*60}")
+    print("OPTIMIZATION RESULTS")
+    print(f"{'='*60}")
+    print(f"Generations: {result1.generations}")
+    print(f"Best Fitness: {result1.best_solution.fitness:.4f}")
+    print(f"Best Parameters: {result1.best_solution.parameters}")
+    print(f"Total Solutions Explored: {len(result1.all_solutions)}")
+    
+    # Example 2: Simulated Annealing
+    print("\n\n" + "="*80)
+    print("EXAMPLE 2: Simulated Annealing")
+    print("="*80)
+    
+    optimizer2 = ProgressiveOptimizer(sphere_function, OptimizationMethod.SIMULATED_ANNEALING)
+    result2 = optimizer2.optimize(initial, max_generations=30)
+    
+    print(f"\n{'='*60}")
+    print("OPTIMIZATION RESULTS")
+    print(f"{'='*60}")
+    print(f"Generations: {result2.generations}")
+    print(f"Best Fitness: {result2.best_solution.fitness:.4f}")
+    print(f"Best Parameters: {result2.best_solution.parameters}")
+    
+    # Example 3: Genetic Algorithm
+    print("\n\n" + "="*80)
+    print("EXAMPLE 3: Genetic Algorithm")
+    print("="*80)
+    
+    optimizer3 = ProgressiveOptimizer(rastrigin_function, OptimizationMethod.GENETIC_ALGORITHM)
+    result3 = optimizer3.optimize(initial, max_generations=20, population_size=20)
+    
+    print(f"\n{'='*60}")
+    print("OPTIMIZATION RESULTS")
+    print(f"{'='*60}")
+    print(f"Generations: {result3.generations}")
+    print(f"Best Fitness: {result3.best_solution.fitness:.4f}")
+    print(f"Best Parameters: {result3.best_solution.parameters}")
+    print(f"Total Solutions Explored: {len(result3.all_solutions)}")
+    
+    # Plot convergence (text-based)
+    print(f"\n{'='*60}")
+    print("CONVERGENCE PLOT")
+    print(f"{'='*60}")
+    
+    history = result3.convergence_history
+    max_fitness = max(history)
+    min_fitness = min(history)
+    
+    for i, fitness in enumerate(history[::5]):  # Every 5th generation
+        bar_length = int(40 * (fitness - min_fitness) / (max_fitness - min_fitness + 0.001))
+        bar = "█" * bar_length
+        print(f"Gen {i*5:3d}: {bar} {fitness:.4f}")
+```
+
+```python patterns/39_leader_follower.py
+"""
+Leader-Follower Multi-Agent Pattern
+One agent leads while others assist or follow
+"""
+
+from typing import List, Dict, Any, Optional
+from dataclasses import dataclass, field
+from enum import Enum
+
+class AgentRole(Enum):
+    LEADER = "leader"
+    FOLLOWER = "follower"
+    SPECIALIST = "specialist"
+
+class TaskStatus(Enum):
+    PENDING = "pending"
+    ASSIGNED = "assigned"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+@dataclass
+class Task:
+    """A task to be completed"""
+    id: str
+    description: str
+    required_skill: str
+    priority: int = 1
+    status: TaskStatus = TaskStatus.PENDING
+    assigned_to: Optional[str] = None
+    result: Any = None
+
+@dataclass
+class Agent:
+    """An agent in the leader-follower system"""
+    id: str
+    name: str
+    role: AgentRole
+    skills: List[str]
+    capacity: int = 3
+    current_tasks: List[Task] = field(default_factory=list)
+    completed_tasks: int = 0
+    
+    def can_handle_task(self, task: Task) -> bool:
+        """Check if agent can handle task"""
+        return (len(self.current_tasks) < self.capacity and 
+                task.required_skill in self.skills)
+    
+    def assign_task(self, task: Task):
+        """Assign task to agent"""
+        task.assigned_to = self.id
+        task.status = TaskStatus.ASSIGNED
+        self.current_tasks.append(task)
+    
+    def complete_task(self, task: Task, result: Any):
+        """Mark task as completed"""
+        task.status = TaskStatus.COMPLETED
+        task.result = result
+        if task in self.current_tasks:
+            self.current_tasks.remove(task)
+        self.completed_tasks += 1
+
+class LeaderAgent(Agent):
+    """Leader agent that coordinates others"""
+    
+    def __init__(self, id: str, name: str, skills: List[str]):
+        super().__init__(id, name, AgentRole.LEADER, skills, capacity=5)
+        self.followers: List[Agent] = []
+    
+    def add_follower(self, follower: Agent):
+        """Add a follower agent"""
+        self.followers.append(follower)
+        print(f"[{self.name}] Added follower: {follower.name} ({follower.role.value})")
+    
+    def delegate_task(self, task: Task) -> bool:
+        """Delegate task to best available follower"""
+        print(f"\n[{self.name}] Delegating task: {task.description}")
+        print(f"  Required skill: {task.required_skill}")
+        
+        # Find capable followers
+        capable = [f for f in self.followers if f.can_handle_task(task)]
+        
+        if not capable:
+            print(f"  ⚠ No capable followers available")
+            
+            # Leader handles it if possible
+            if self.can_handle_task(task):
+                print(f"  → Leader will handle it")
+                self.assign_task(task)
+                return True
+            else:
+                print(f"  ✗ Cannot delegate")
+                return False
+        
+        # Select best follower (least loaded)
+        best_follower = min(capable, key=lambda f: len(f.current_tasks))
+        
+        print(f"  → Assigned to: {best_follower.name}")
+        best_follower.assign_task(task)
+        return True
+    
+    def coordinate(self, tasks: List[Task]):
+        """Coordinate task execution"""
+        print(f"\n{'='*70}")
+        print(f"LEADER COORDINATION: {self.name}")
+        print(f"{'='*70}")
+        print(f"Total tasks: {len(tasks)}")
+        print(f"Followers: {len(self.followers)}\n")
+        
+        # Prioritize tasks
+        tasks.sort(key=lambda t: t.priority, reverse=True)
+        
+        # Delegate tasks
+        for task in tasks:
+            self.delegate_task(task)
+        
+        # Execute tasks
+        print(f"\n{'='*70}")
+        print("EXECUTION PHASE")
+        print(f"{'='*70}\n")
+        
+        self._execute_all_tasks()
+        
+        # Report results
+        self._report_results(tasks)
+    
+    def _execute_all_tasks(self):
+        """Execute all assigned tasks"""
+        # Execute leader's tasks
+        for task in self.current_tasks[:]:
+            result = self._execute_task(task)
+            self.complete_task(task, result)
+        
+        # Execute followers' tasks
+        for follower in self.followers:
+            for task in follower.current_tasks[:]:
+                result = self._execute_task(task)
+                follower.complete_task(task, result)
+    
+    def _execute_task(self, task: Task) -> Any:
+        """Execute a task"""
+        print(f"[{task.assigned_to}] Executing: {task.description}")
+        
+        # Simulate task execution
+        import time
+        import random
+        time.sleep(0.1)
+        
+        # Simulate occasional failure
+        if random.random() < 0.1:
+            task.status = TaskStatus.FAILED
+            print(f"  ✗ Failed")
+            return None
+        
+        result = f"Result for {task.description}"
+        print(f"  ✓ Completed")
+        return result
+    
+    def _report_results(self, tasks: List[Task]):
+        """Report coordination results"""
+        print(f"\n{'='*70}")
+        print("COORDINATION RESULTS")
+        print(f"{'='*70}\n")
+        
+        completed = sum(1 for t in tasks if t.status == TaskStatus.COMPLETED)
+        failed = sum(1 for t in tasks if t.status == TaskStatus.FAILED)
+        
+        print(f"Total Tasks: {len(tasks)}")
+        print(f"Completed: {completed}")
+        print(f"Failed: {failed}")
+        print(f"Success Rate: {completed/len(tasks):.1%}")
+        
+        print(f"\nAgent Performance:")
+        print(f"  {self.name} (Leader): {self.completed_tasks} tasks")
+        
+        for follower in self.followers:
+            print(f"  {follower.name} ({follower.role.value}): {follower.completed_tasks} tasks")
+        
+        # Task breakdown by skill
+        print(f"\nTasks by Skill:")
+        skills = {}
+        for task in tasks:
+            skill = task.required_skill
+            skills[skill] = skills.get(skill, 0) + 1
+        
+        for skill, count in skills.items():
+            print(f"  {skill}: {count}")
+
+class LeaderFollowerSystem:
+    """Leader-follower multi-agent system"""
+    
+    def __init__(self, system_name: str):
+        self.system_name = system_name
+        self.leaders: List[LeaderAgent] = []
+        self.tasks: List[Task] = []
+    
+    def add_leader(self, leader: LeaderAgent):
+        """Add leader to system"""
+        self.leaders.append(leader)
+        print(f"Added leader: {leader.name}")
+    
+    def create_team(self, leader: LeaderAgent, followers: List[Agent]):
+        """Create team with leader and followers"""
+        print(f"\n{'='*60}")
+        print(f"CREATING TEAM: {leader.name}'s Team")
+        print(f"{'='*60}\n")
+        
+        for follower in followers:
+            leader.add_follower(follower)
+        
+        if leader not in self.leaders:
+            self.add_leader(leader)
+    
+    def add_tasks(self, tasks: List[Task]):
+        """Add tasks to system"""
+        self.tasks.extend(tasks)
+        print(f"Added {len(tasks)} tasks to system")
+    
+    def execute(self):
+        """Execute all tasks"""
+        print(f"\n{'='*70}")
+        print(f"LEADER-FOLLOWER SYSTEM: {self.system_name}")
+        print(f"{'='*70}\n")
+        
+        for leader in self.leaders:
+            # Assign tasks to this leader's team
+            leader.coordinate(self.tasks)
+
+
+# Usage
+if __name__ == "__main__":
+    print("="*80)
+    print("LEADER-FOLLOWER PATTERN DEMONSTRATION")
+    print("="*80)
+    
+    # Create leader
+    leader = LeaderAgent(
+        id="leader_1",
+        name="Project Manager",
+        skills=["planning", "coordination", "coding"]
+    )
+    
+    # Create follower agents
+    followers = [
+        Agent(
+            id="dev_1",
+            name="Backend Developer",
+            role=AgentRole.FOLLOWER,
+            skills=["coding", "database", "api"],
+            capacity=3
+        ),
+        Agent(
+            id="dev_2",
+            name="Frontend Developer",
+            role=AgentRole.FOLLOWER,
+            skills=["coding", "ui", "design"],
+            capacity=3
+        ),
+        Agent(
+            id="specialist_1",
+            name="DevOps Engineer",
+            role=AgentRole.SPECIALIST,
+            skills=["deployment", "infrastructure", "monitoring"],
+            capacity=2
+        ),
+        Agent(
+            id="tester_1",
+            name="QA Tester",
+            role=AgentRole.SPECIALIST,
+            skills=["testing", "quality_assurance"],
+            capacity=4
+        )
+    ]
+    
+    # Create system
+    system = LeaderFollowerSystem("Software Development Team")
+    
+    # Build team
+    system.create_team(leader, followers)
+    
+    # Create tasks
+    tasks = [
+        Task("T1", "Implement user authentication", "coding", priority=5),
+        Task("T2", "Design user interface", "ui", priority=4),
+        Task("T3", "Set up database", "database", priority=5),
+        Task("T4", "Create API endpoints", "api", priority=4),
+        Task("T5", "Deploy to production", "deployment", priority=3),
+        Task("T6", "Write unit tests", "testing", priority=3),
+        Task("T7", "Set up monitoring", "monitoring", priority=2),
+        Task("T8", "Quality assurance", "quality_assurance", priority=3),
+        Task("T9", "Implement dashboard", "ui", priority=2),
+        Task("T10", "Optimize database queries", "database", priority=2),
+    ]
+    
+    system.add_tasks(tasks)
+    
+    # Execute
+    system.execute()
+```
+
+```python patterns/40_competitive_multi_agent.py
+"""
+Competitive Multi-Agent Pattern
+Agents compete to produce best solution
+"""
+
+from typing import List, Dict, Any, Callable
+from dataclasses import dataclass
+from enum import Enum
+import random
+import time
+
+class CompetitionType(Enum):
+    QUALITY = "quality"
+    SPEED = "speed"
+    EFFICIENCY = "efficiency"
+    CREATIVITY = "creativity"
+
+@dataclass
+class Submission:
+    """Agent's submission"""
+    agent_id: str
+    solution: Any
+    score: float
+    time_taken_ms: float
+    metadata: Dict[str, Any]
+
+@dataclass
+class CompetitionResult:
+    """Result of competition"""
+    winner: Submission
+    all_submissions: List[Submission]
+    competition_type: CompetitionType
+    evaluation_criteria: Dict[str, float]
+
+class CompetitiveAgent:
+    """Agent that competes with others"""
+    
+    def __init__(self, agent_id: str, name: str, strategy: str):
+        self.agent_id = agent_id
+        self.name = name
+        self.strategy = strategy
+        self.wins = 0
+        self.total_competitions = 0
+    
+    def compete(self, task: str, competition_type: CompetitionType) -> Submission:
+        """Generate solution for competition"""
+        print(f"\n[{self.name}] Competing with {self.strategy} strategy...")
+        
+        start_time = time.time()
+        
+        # Generate solution based on strategy
+        if self.strategy == "fast":
+            solution = self._fast_solution(task)
+        elif self.strategy == "thorough":
+            solution = self._thorough_solution(task)
+        elif self.strategy == "creative":
+            solution = self._creative_solution(task)
+        else:
+            solution = self._balanced_solution(task)
+        
+        time_taken = (time.time() - start_time) * 1000
+        
+        # Calculate score
+        score = self._evaluate_solution(solution, competition_type)
+        
+        print(f"  Solution: {solution}")
+        print(f"  Score: {score:.2f}")
+        print(f"  Time: {time_taken:.0f}ms")
+        
+        return Submission(
+            agent_id=self.agent_id,
+            solution=solution,
+            score=score,
+            time_taken_ms=time_taken,
+            metadata={"strategy": self.strategy, "agent_name": self.name}
+        )
+    
+    def _fast_solution(self, task: str) -> str:
+        """Quick but basic solution"""
+        time.sleep(0.05)
+        return f"Fast solution for: {task}"
+    
+    def _thorough_solution(self, task: str) -> str:
+        """Slow but high-quality solution"""
+        time.sleep(0.3)
+        return f"Comprehensive and detailed solution for: {task}"
+    
+    def _creative_solution(self, task: str) -> str:
+        """Creative approach"""
+        time.sleep(0.15)
+        return f"Innovative and creative solution for: {task}"
+    
+    def _balanced_solution(self, task: str) -> str:
+        """Balanced approach"""
+        time.sleep(0.1)
+        return f"Well-balanced solution for: {task}"
+    
+    def _evaluate_solution(self, solution: str, competition_type: CompetitionType) -> float:
+        """Evaluate solution quality"""
+        base_score = len(solution) / 100  # Simple metric
+        
+        # Adjust based on strategy and competition type
+        if competition_type == CompetitionType.QUALITY:
+            if self.strategy == "thorough":
+                return base_score * random.uniform(0.9, 1.0)
+            elif self.strategy == "fast":
+                return base_score * random.uniform(0.6, 0.8)
+        elif competition_type == CompetitionType.SPEED:
+            if self.strategy == "fast":
+                return base_score * random.uniform(0.9, 1.0)
+            elif self.strategy == "thorough":
+                return base_score * random.uniform(0.5, 0.7)
+        elif competition_type == CompetitionType.CREATIVITY:
+            if self.strategy == "creative":
+                return base_score * random.uniform(0.9, 1.0)
+            else:
+                return base_score * random.uniform(0.6, 0.8)
+        
+        return base_score * random.uniform(0.7, 0.9)
+
+class CompetitionArena:
+    """Arena where agents compete"""
+    
+    def __init__(self, arena_name: str):
+        self.arena_name = arena_name
+        self.agents: List[CompetitiveAgent] = []
+        self.competition_history: List[CompetitionResult] = []
+    
+    def register_agent(self, agent: CompetitiveAgent):
+        """Register agent for competition"""
+        self.agents.append(agent)
+        print(f"Registered: {agent.name} ({agent.strategy} strategy)")
+    
+    def run_competition(self, task: str, competition_type: CompetitionType) -> CompetitionResult:
+        """Run competition among all agents"""
+        print(f"\n{'='*70}")
+        print(f"COMPETITION: {self.arena_name}")
+        print(f"{'='*70}")
+        print(f"Task: {task}")
+        print(f"Type: {competition_type.value}")
+        print(f"Competitors: {len(self.agents)}")
+        
+        # Get submissions from all agents
+        submissions = []
+        for agent in self.agents:
+            submission = agent.compete(task, competition_type)
+            submissions.append(submission)
+            agent.total_competitions += 1
+        
+        # Evaluate and rank
+        print(f"\n{'='*70}")
+        print("EVALUATION")
+        print(f"{'='*70}\n")
+        
+        ranked = self._rank_submissions(submissions, competition_type)
+        
+        # Show rankings
+        for i, submission in enumerate(ranked, 1):
+            agent_name = submission.metadata['agent_name']
+            print(f"{i}. {agent_name}: {submission.score:.2f} points ({submission.time_taken_ms:.0f}ms)")
+        
+        # Determine winner
+        winner = ranked[0]
+        winner_agent = next(a for a in self.agents if a.agent_id == winner.agent_id)
+        winner_agent.wins += 1
+        
+                print(f"\n🏆 Winner: {winner.metadata['agent_name']}")
+        
+        # Create result
+        result = CompetitionResult(
+            winner=winner,
+            all_submissions=submissions,
+            competition_type=competition_type,
+            evaluation_criteria={
+                "quality_weight": 0.6 if competition_type == CompetitionType.QUALITY else 0.3,
+                "speed_weight": 0.6 if competition_type == CompetitionType.SPEED else 0.2,
+                "creativity_weight": 0.6 if competition_type == CompetitionType.CREATIVITY else 0.2
+            }
+        )
+        
+        self.competition_history.append(result)
+        return result
+    
+    def _rank_submissions(self, submissions: List[Submission], 
+                         competition_type: CompetitionType) -> List[Submission]:
+        """Rank submissions by score"""
+        # Multi-criteria ranking
+        ranked = sorted(submissions, key=lambda s: (
+            s.score * 0.7 +  # Quality component
+            (1000 / max(s.time_taken_ms, 1)) * 0.3  # Speed component
+        ), reverse=True)
+        
+        return ranked
+    
+    def get_leaderboard(self) -> List[Dict[str, Any]]:
+        """Get overall leaderboard"""
+        leaderboard = []
+        
+        for agent in self.agents:
+            win_rate = agent.wins / agent.total_competitions if agent.total_competitions > 0 else 0
+            
+            leaderboard.append({
+                'name': agent.name,
+                'strategy': agent.strategy,
+                'wins': agent.wins,
+                'total_competitions': agent.total_competitions,
+                'win_rate': win_rate
+            })
+        
+        # Sort by win rate
+        leaderboard.sort(key=lambda x: x['win_rate'], reverse=True)
+        
+        return leaderboard
+    
+    def print_leaderboard(self):
+        """Print leaderboard"""
+        leaderboard = self.get_leaderboard()
+        
+        print(f"\n{'='*70}")
+        print("OVERALL LEADERBOARD")
+        print(f"{'='*70}\n")
+        
+        print(f"{'Rank':<6} {'Agent':<25} {'Strategy':<12} {'Wins':<6} {'Total':<6} {'Win Rate':<10}")
+        print("-" * 70)
+        
+        for i, entry in enumerate(leaderboard, 1):
+            print(f"{i:<6} {entry['name']:<25} {entry['strategy']:<12} "
+                  f"{entry['wins']:<6} {entry['total_competitions']:<6} {entry['win_rate']:.1%}")
+
+
+# Usage
+if __name__ == "__main__":
+    print("="*80)
+    print("COMPETITIVE MULTI-AGENT PATTERN DEMONSTRATION")
+    print("="*80)
+    
+    # Create arena
+    arena = CompetitionArena("AI Solutions Arena")
+    
+    # Create competing agents
+    agents = [
+        CompetitiveAgent("agent_1", "SpeedDemon", "fast"),
+        CompetitiveAgent("agent_2", "DeepThinker", "thorough"),
+        CompetitiveAgent("agent_3", "Innovator", "creative"),
+        CompetitiveAgent("agent_4", "AllRounder", "balanced"),
+    ]
+    
+    print("\nRegistering agents...")
+    for agent in agents:
+        arena.register_agent(agent)
+    
+    # Run multiple competitions
+    competitions = [
+        ("Optimize database query performance", CompetitionType.QUALITY),
+        ("Generate creative marketing slogan", CompetitionType.CREATIVITY),
+        ("Process data pipeline quickly", CompetitionType.SPEED),
+        ("Design scalable architecture", CompetitionType.QUALITY),
+        ("Create engaging user interface", CompetitionType.CREATIVITY),
+    ]
+    
+    for task, comp_type in competitions:
+        arena.run_competition(task, comp_type)
+        print("\n" + "="*80 + "\n")
+        time.sleep(0.2)
+    
+    # Show final leaderboard
+    arena.print_leaderboard()
+    
+    
+    
+    
+```
+41_cooperative_multiagency.py
+"""
+Cooperative Multi-Agent Pattern
+Agents work together sharing information and goals
+"""
+
+from typing import List, Dict, Any, Optional
+from dataclasses import dataclass, field
+from enum import Enum
+from datetime import datetime
+
+class MessageType(Enum):
+    REQUEST_HELP = "request_help"
+    OFFER_HELP = "offer_help"
+    SHARE_INFO = "share_info"
+    TASK_COMPLETE = "task_complete"
+    COORDINATE = "coordinate"
+
+@dataclass
+class Message:
+    """Message between agents"""
+    sender_id: str
+    receiver_id: str  # or "broadcast"
+    message_type: MessageType
+    content: Any
+    timestamp: datetime = field(default_factory=datetime.now)
+
+@dataclass
+class SharedKnowledge:
+    """Knowledge shared among agents"""
+    key: str
+    value: Any
+    contributor_id: str
+    timestamp: datetime = field(default_factory=datetime.now)
+
+class CooperativeAgent:
+    """Agent that cooperates with others"""
+    
+    def __init__(self, agent_id: str, name: str, expertise: List[str]):
+        self.agent_id = agent_id
+        self.name = name
+        self.expertise = expertise
+        self.messages: List[Message] = []
+        self.shared_memory: Dict[str, SharedKnowledge] = {}
+        self.helpers: List['CooperativeAgent'] = []
+        self.tasks_completed = 0
+        self.help_given = 0
+        self.help_received = 0
+    
+    def receive_message(self, message: Message):
+        """Receive message from another agent"""
+        self.messages.append(message)
+        
+        print(f"[{self.name}] Received {message.message_type.value} from {message.sender_id}")
+        
+        # Process message
+        if message.message_type == MessageType.REQUEST_HELP:
+            self._handle_help_request(message)
+        elif message.message_type == MessageType.SHARE_INFO:
+            self._handle_shared_info(message)
+        elif message.message_type == MessageType.TASK_COMPLETE:
+            self._handle_task_complete(message)
+    
+    def _handle_help_request(self, message: Message):
+        """Handle request for help"""
+        task = message.content
+        
+        # Check if we have expertise
+        if any(exp in task.get('required_skills', []) for exp in self.expertise):
+            print(f"  → Can help with this task!")
+            self.help_given += 1
+            
+            # Offer help
+            response = Message(
+                sender_id=self.agent_id,
+                receiver_id=message.sender_id,
+                message_type=MessageType.OFFER_HELP,
+                content={"task_id": task.get('id'), "expertise": self.expertise}
+            )
+            
+            # In real system, would send to sender
+            print(f"  → Offering help to {message.sender_id}")
+        else:
+            print(f"  → Cannot help (no relevant expertise)")
+    
+    def _handle_shared_info(self, message: Message):
+        """Handle shared information"""
+        info = message.content
+        
+        # Store in shared memory
+        key = info.get('key')
+        value = info.get('value')
+        
+        if key:
+            self.shared_memory[key] = SharedKnowledge(
+                key=key,
+                value=value,
+                contributor_id=message.sender_id
+            )
+            print(f"  → Stored shared knowledge: {key}")
+    
+    def _handle_task_complete(self, message: Message):
+        """Handle task completion notification"""
+        result = message.content
+        print(f"  → Noted: {message.sender_id} completed {result.get('task_id')}")
+    
+    def share_knowledge(self, key: str, value: Any, team: List['CooperativeAgent']):
+        """Share knowledge with team"""
+        print(f"[{self.name}] Sharing knowledge: {key}")
+        
+        message = Message(
+            sender_id=self.agent_id,
+            receiver_id="broadcast",
+            message_type=MessageType.SHARE_INFO,
+            content={"key": key, "value": value}
+        )
+        
+        for agent in team:
+            if agent.agent_id != self.agent_id:
+                agent.receive_message(message)
+    
+    def request_help(self, task: Dict[str, Any], team: List['CooperativeAgent']) -> List['CooperativeAgent']:
+        """Request help from team"""
+        print(f"[{self.name}] Requesting help for task: {task.get('id')}")
+        
+        message = Message(
+            sender_id=self.agent_id,
+            receiver_id="broadcast",
+            message_type=MessageType.REQUEST_HELP,
+            content=task
+        )
+        
+        helpers = []
+        for agent in team:
+            if agent.agent_id != self.agent_id:
+                agent.receive_message(message)
+                
+                # Check if they offered help (simplified)
+                if any(exp in task.get('required_skills', []) for exp in agent.expertise):
+                    helpers.append(agent)
+        
+        self.help_received += len(helpers)
+        return helpers
+    
+    def collaborate(self, task: Dict[str, Any], helpers: List['CooperativeAgent']) -> Any:
+        """Collaborate with helpers on task"""
+        print(f"\n[{self.name}] Collaborating on: {task.get('description')}")
+        print(f"  Team size: {1 + len(helpers)}")
+        
+        # Gather contributions
+        contributions = []
+        
+        # Own contribution
+        my_contribution = self._contribute(task)
+        contributions.append({"agent": self.name, "contribution": my_contribution})
+        
+        # Helper contributions
+        for helper in helpers:
+            helper_contribution = helper._contribute(task)
+            contributions.append({"agent": helper.name, "contribution": helper_contribution})
+        
+        # Combine contributions
+        result = self._combine_contributions(contributions, task)
+        
+        self.tasks_completed += 1
+        
+        # Notify team
+        self._notify_completion(task, result, [self] + helpers)
+        
+        return result
+    
+    def _contribute(self, task: Dict[str, Any]) -> str:
+        """Contribute to task based on expertise"""
+        relevant_skills = [s for s in self.expertise if s in task.get('required_skills', [])]
+        
+        if relevant_skills:
+            return f"Contribution using {', '.join(relevant_skills)}"
+        else:
+            return "General contribution"
+    
+    def _combine_contributions(self, contributions: List[Dict], task: Dict[str, Any]) -> str:
+        """Combine contributions into final result"""
+        combined = f"Collaborative result for {task.get('id')}:\n"
+        
+        for contrib in contributions:
+            combined += f"  - {contrib['agent']}: {contrib['contribution']}\n"
+        
+        return combined
+    
+    def _notify_completion(self, task: Dict[str, Any], result: str, team: List['CooperativeAgent']):
+        """Notify team of completion"""
+        message = Message(
+            sender_id=self.agent_id,
+            receiver_id="broadcast",
+            message_type=MessageType.TASK_COMPLETE,
+            content={"task_id": task.get('id'), "result": result}
+        )
+        
+        for agent in team:
+            if agent.agent_id != self.agent_id:
+                agent.receive_message(message)
+
+class CooperativeSystem:
+    """System managing cooperative agents"""
+    
+    def __init__(self, system_name: str):
+        self.system_name = system_name
+        self.agents: List[CooperativeAgent] = []
+        self.shared_workspace: Dict[str, Any] = {}
+    
+    def add_agent(self, agent: CooperativeAgent):
+        """Add agent to system"""
+        self.agents.append(agent)
+        print(f"Added agent: {agent.name} (expertise: {', '.join(agent.expertise)})")
+    
+    def execute_task(self, task: Dict[str, Any]):
+        """Execute task cooperatively"""
+        print(f"\n{'='*70}")
+        print(f"COOPERATIVE TASK EXECUTION")
+        print(f"{'='*70}")
+        print(f"Task: {task.get('description')}")
+        print(f"Required skills: {', '.join(task.get('required_skills', []))}")
+        
+        # Find primary agent (most relevant expertise)
+        primary_agent = self._select_primary_agent(task)
+        
+        if not primary_agent:
+            print("\n✗ No suitable agent found")
+            return None
+        
+        print(f"\nPrimary agent: {primary_agent.name}")
+        
+        # Request help
+        helpers = primary_agent.request_help(task, self.agents)
+        
+        print(f"Helpers: {', '.join(h.name for h in helpers) if helpers else 'None'}")
+        
+        # Collaborate
+        result = primary_agent.collaborate(task, helpers)
+        
+        print(f"\n{'='*60}")
+        print("TASK RESULT")
+        print(f"{'='*60}")
+        print(result)
+        
+        return result
+    
+    def _select_primary_agent(self, task: Dict[str, Any]) -> Optional[CooperativeAgent]:
+        """Select most suitable agent for task"""
+        required_skills = set(task.get('required_skills', []))
+        
+        best_agent = None
+        best_match = 0
+        
+        for agent in self.agents:
+            agent_skills = set(agent.expertise)
+            match_count = len(required_skills & agent_skills)
+            
+            if match_count > best_match:
+                best_match = match_count
+                best_agent = agent
+        
+        return best_agent
+    
+    def share_knowledge_across_team(self):
+        """Share knowledge among all agents"""
+        print(f"\n{'='*70}")
+        print("KNOWLEDGE SHARING SESSION")
+        print(f"{'='*70}\n")
+        
+        # Each agent shares something
+        for agent in self.agents:
+            knowledge_item = f"Best practice from {agent.name}"
+            agent.share_knowledge(
+                key=f"practice_{agent.agent_id}",
+                value=knowledge_item,
+                team=self.agents
+            )
+    
+    def print_statistics(self):
+        """Print cooperation statistics"""
+        print(f"\n{'='*70}")
+        print("COOPERATION STATISTICS")
+        print(f"{'='*70}\n")
+        
+        print(f"{'Agent':<20} {'Completed':<12} {'Help Given':<12} {'Help Received':<15}")
+        print("-" * 70)
+        
+        for agent in self.agents:
+            print(f"{agent.name:<20} {agent.tasks_completed:<12} "
+                  f"{agent.help_given:<12} {agent.help_received:<15}")
+        
+        total_help = sum(a.help_given for a in self.agents)
+        total_tasks = sum(a.tasks_completed for a in self.agents)
+        
+        print(f"\nTotal collaborative actions: {total_help}")
+        print(f"Total tasks completed: {total_tasks}")
+        print(f"Average help per task: {total_help / max(total_tasks, 1):.1f}")
+
+
+# Usage
+if __name__ == "__main__":
+    print("="*80)
+    print("COOPERATIVE MULTI-AGENT PATTERN DEMONSTRATION")
+    print("="*80)
+    
+    # Create cooperative system
+    system = CooperativeSystem("Development Team")
+    
+    # Create agents with different expertise
+    agents = [
+        CooperativeAgent("agent_1", "Alice", ["python", "backend", "databases"]),
+        CooperativeAgent("agent_2", "Bob", ["javascript", "frontend", "ui"]),
+        CooperativeAgent("agent_3", "Carol", ["devops", "cloud", "deployment"]),
+        CooperativeAgent("agent_4", "Dave", ["testing", "quality", "automation"]),
+    ]
+    
+    print("\nBuilding cooperative team...\n")
+    for agent in agents:
+        system.add_agent(agent)
+    
+    # Knowledge sharing
+    system.share_knowledge_across_team()
+    
+    # Execute collaborative tasks
+    tasks = [
+        {
+            "id": "T1",
+            "description": "Build full-stack web application",
+            "required_skills": ["python", "javascript", "databases", "frontend"]
+        },
+        {
+            "id": "T2",
+            "description": "Deploy application to cloud",
+            "required_skills": ["devops", "cloud", "deployment"]
+        },
+        {
+            "id": "T3",
+            "description": "Create automated test suite",
+            "required_skills": ["testing", "automation", "python"]
+        },
+    ]
+    
+    for task in tasks:
+        system.execute_task(task)
+        print("\n" + "="*80 + "\n")
+    
+    # Print statistics
+    system.print_statistics()
+```
+
+```
+42_neuro_symbolic.py
+"""
+Neuro-Symbolic Integration Pattern
+Combines neural (LLM) and symbolic (logic) reasoning
+"""
+
+from typing import List, Dict, Any, Set, Tuple
+from dataclasses import dataclass
+from enum import Enum
+
+class SymbolType(Enum):
+    ENTITY = "entity"
+    RELATION = "relation"
+    RULE = "rule"
+    FACT = "fact"
+
+@dataclass
+class Symbol:
+    """Symbolic representation"""
+    name: str
+    symbol_type: SymbolType
+    properties: Dict[str, Any]
+
+@dataclass
+class LogicalRule:
+    """Logical inference rule"""
+    premises: List[str]
+    conclusion: str
+    confidence: float = 1.0
+
+@dataclass
+class Fact:
+    """Known fact"""
+    subject: str
+    predicate: str
+    object: str
+
+class SymbolicReasoner:
+    """Symbolic reasoning engine"""
+    
+    def __init__(self):
+        self.facts: List[Fact] = []
+        self.rules: List[LogicalRule] = []
+        self.symbols: Dict[str, Symbol] = {}
+    
+    def add_fact(self, subject: str, predicate: str, obj: str):
+        """Add a fact to knowledge base"""
+        fact = Fact(subject, predicate, obj)
+        self.facts.append(fact)
+        print(f"[Symbolic] Added fact: {subject} {predicate} {obj}")
+    
+    def add_rule(self, rule: LogicalRule):
+        """Add inference rule"""
+        self.rules.append(rule)
+        print(f"[Symbolic] Added rule: {' AND '.join(rule.premises)} → {rule.conclusion}")
+    
+    def query(self, subject: str, predicate: str) -> List[str]:
+        """Query knowledge base"""
+        results = []
+        
+        # Direct facts
+        for fact in self.facts:
+            if fact.subject == subject and fact.predicate == predicate:
+                results.append(fact.object)
+        
+        # Inferred facts
+        inferred = self._apply_rules()
+        for fact in inferred:
+            if fact.subject == subject and fact.predicate == predicate:
+                if fact.object not in results:
+                    results.append(fact.object)
+        
+        return results
+    
+    def _apply_rules(self) -> List[Fact]:
+        """Apply inference rules"""
+        inferred = []
+        
+        for rule in self.rules:
+            # Check if all premises are satisfied
+            if self._check_premises(rule.premises):
+                # Create inferred fact
+                parts = rule.conclusion.split()
+                if len(parts) == 3:
+                    inferred.append(Fact(parts[0], parts[1], parts[2]))
+        
+        return inferred
+    
+    def _check_premises(self, premises: List[str]) -> bool:
+        """Check if premises are satisfied"""
+        for premise in premises:
+            parts = premise.split()
+            if len(parts) == 3:
+                subject, predicate, obj = parts
+                found = any(
+                    f.subject == subject and 
+                    f.predicate == predicate and 
+                    f.object == obj
+                    for f in self.facts
+                )
+                if not found:
+                    return False
+        return True
+
+class NeuralReasoner:
+    """Neural reasoning component (LLM-based)"""
+    
+    def __init__(self):
+        self.context = ""
+    
+    def extract_entities(self, text: str) -> List[str]:
+        """Extract entities from text"""
+        # Simulated NER (would use actual LLM)
+        print(f"[Neural] Extracting entities from: {text[:50]}...")
+        
+        # Simple simulation
+        words = text.split()
+        entities = [w for w in words if w[0].isupper()]
+        
+        print(f"[Neural] Found entities: {entities}")
+        return entities
+    
+    def extract_relations(self, text: str) -> List[Tuple[str, str, str]]:
+        """Extract relations from text"""
+        # Simulated relation extraction
+        print(f"[Neural] Extracting relations from: {text[:50]}...")
+        
+        relations = []
+        
+        # Simple pattern matching (would use LLM)
+        if "is a" in text.lower():
+            parts = text.lower().split("is a")
+            if len(parts) == 2:
+                subject = parts[0].strip().split()[-1]
+                obj = parts[1].strip().split()[0]
+                relations.append((subject, "is_a", obj))
+        
+        if "has" in text.lower():
+            parts = text.lower().split("has")
+            if len(parts) == 2:
+                subject = parts[0].strip().split()[-1]
+                obj = parts[1].strip().split()[0]
+                relations.append((subject, "has", obj))
+        
+        print(f"[Neural] Found relations: {relations}")
+        return relations
+    
+    def reason_about(self, question: str, context: str) -> str:
+        """Reason about question using neural approach"""
+        # Simulated neural reasoning
+        print(f"[Neural] Reasoning: {question}")
+        
+        # Would use LLM here
+        if "what" in question.lower():
+            return "Neural inference based on patterns in data"
+        elif "why" in question.lower():
+            return "Neural explanation based on learned associations"
+        else:
+            return "Neural response"
+
+class NeuroSymbolicAgent:
+    """Agent combining neural and symbolic reasoning"""
+    
+    def __init__(self, agent_id: str):
+        self.agent_id = agent_id
+        self.neural = NeuralReasoner()
+        self.symbolic = SymbolicReasoner()
+    
+    def learn_from_text(self, text: str):
+        """Extract knowledge from text using neural, store symbolically"""
+        print(f"\n{'='*70}")
+        print("LEARNING FROM TEXT")
+        print(f"{'='*70}")
+        print(f"Text: {text}\n")
+        
+        # Neural extraction
+        entities = self.neural.extract_entities(text)
+        relations = self.neural.extract_relations(text)
+        
+        # Store as symbolic facts
+        print(f"\n[Integration] Converting to symbolic facts...")
+        for subject, predicate, obj in relations:
+            self.symbolic.add_fact(subject, predicate, obj)
+    
+    def hybrid_reasoning(self, question: str) -> Dict[str, Any]:
+        """Answer question using both neural and symbolic reasoning"""
+        print(f"\n{'='*70}")
+        print("HYBRID REASONING")
+        print(f"{'='*70}")
+        print(f"Question: {question}\n")
+        
+        # Try symbolic reasoning first
+        print("Step 1: Symbolic Reasoning")
+        print("-" * 60)
+        
+        symbolic_answer = self._symbolic_reasoning(question)
+        
+        # If symbolic fails or needs enrichment, use neural
+        print("\nStep 2: Neural Reasoning")
+        print("-" * 60)
+        
+        neural_answer = self.neural.reason_about(question, "")
+        
+        # Combine results
+        print("\nStep 3: Integration")
+        print("-" * 60)
+        
+        combined = self._integrate_answers(symbolic_answer, neural_answer)
+        
+        return {
+            'question': question,
+            'symbolic_answer': symbolic_answer,
+            'neural_answer': neural_answer,
+            'combined_answer': combined
+        }
+    
+    def _symbolic_reasoning(self, question: str) -> Optional[str]:
+        """Apply symbolic reasoning"""
+        # Parse question
+        words = question.lower().split()
+        
+        if "is" in words and len(words) >= 3:
+            # Query like "What is X?"
+            subject = words[words.index("is") + 1] if words.index("is") + 1 < len(words) else None
+            
+            if subject:
+                results = self.symbolic.query(subject, "is_a")
+                if results:
+                    answer = f"{subject} is a {results[0]}"
+                    print(f"[Symbolic] Deduced: {answer}")
+                    return answer
+        
+        print(f"[Symbolic] No definitive answer from logical rules")
+        return None
+    
+    def _integrate_answers(self, symbolic: Optional[str], neural: str) -> str:
+        """Integrate symbolic and neural answers"""
+        if symbolic:
+            # Symbolic reasoning succeeded
+            integrated = f"Based on logical deduction: {symbolic}"
+            
+            # Enrich with neural insights
+            if neural and "neural" in neural.lower():
+                integrated += f"\nAdditional context: {neural}"
+            
+            print(f"[Integration] Using symbolic answer, enriched with neural context")
+        else:
+            # Fall back to neural
+            integrated = f"Based on learned patterns: {neural}"
+            print(f"[Integration] Using neural answer (no symbolic solution)")
+        
+        return integrated
+    
+    def add_logical_rules(self):
+        """Add logical inference rules"""
+        print(f"\n{'='*70}")
+        print("ADDING LOGICAL RULES")
+        print(f"{'='*70}\n")
+        
+        # Transitivity rule
+        self.symbolic.add_rule(LogicalRule(
+            premises=["X is_a Y", "Y is_a Z"],
+            conclusion="X is_a Z",
+            confidence=1.0
+        ))
+        
+        # Inheritance rule
+        self.symbolic.add_rule(LogicalRule(
+            premises=["X is_a Y", "Y has Z"],
+            conclusion="X has Z",
+            confidence=0.9
+        ))
+
+
+# Usage
+if __name__ == "__main__":
+    print("="*80)
+    print("NEURO-SYMBOLIC INTEGRATION PATTERN DEMONSTRATION")
+    print("="*80)
+    
+    agent = NeuroSymbolicAgent("neuro-symbolic-001")
+    
+    # Learn from text (neural extraction → symbolic storage)
+    texts = [
+        "A dog is a mammal",
+        "A mammal is an animal",
+        "Mammals have fur",
+        "A cat is a mammal",
+    ]
+    
+    for text in texts:
+        agent.learn_from_text(text)
+    
+    # Add logical rules
+    agent.add_logical_rules()
+    
+    # Test hybrid reasoning
+    questions = [
+        "What is a dog?",
+        "What is a cat?",
+        "Why do dogs have characteristics?",
+    ]
+    
+    for question in questions:
+        result = agent.hybrid_reasoning(question)
+        
+        print(f"\n{'='*70}")
+        print("FINAL ANSWER")
+        print(f"{'='*70}")
+        print(result['combined_answer'])
+        print("\n" + "="*80 + "\n")
+```
+
