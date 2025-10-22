@@ -14895,3 +14895,6061 @@ if __name__ == "__main__":
     main()
 ```
 
+
+
+
+
+I'll continue with the next priority patterns: **Pattern 90: Load Balancing**, **Pattern 79: Batch Processing Agent**, and **Pattern 29: Semantic Memory Networks**.
+
+## Pattern 90: Load Balancing
+
+```python patterns/90_load_balancing.py
+"""
+Pattern 90: Load Balancing
+
+Description:
+    Distributes requests across multiple agent instances to optimize
+    resource utilization, minimize latency, and ensure high availability.
+
+Use Cases:
+    - High-throughput agent systems
+    - Auto-scaling agent deployments
+    - Fault-tolerant architectures
+    - Resource optimization
+
+Key Features:
+    - Multiple load balancing strategies
+    - Health monitoring
+    - Auto-scaling support
+    - Request queue management
+
+Example:
+    >>> balancer = LoadBalancer()
+    >>> balancer.add_agent(agent1)
+    >>> balancer.add_agent(agent2)
+    >>> result = balancer.execute(request)
+"""
+
+from dataclasses import dataclass, field
+from typing import List, Dict, Any, Optional, Callable
+from enum import Enum
+import time
+import threading
+from collections import deque
+import random
+import statistics
+
+class LoadBalancingStrategy(Enum):
+    """Load balancing strategies"""
+    ROUND_ROBIN = "round_robin"
+    LEAST_CONNECTIONS = "least_connections"
+    WEIGHTED_ROUND_ROBIN = "weighted_round_robin"
+    RESPONSE_TIME = "response_time"
+    RANDOM = "random"
+    IP_HASH = "ip_hash"
+    LEAST_LOAD = "least_load"
+
+class AgentHealth(Enum):
+    """Health status of agent instances"""
+    HEALTHY = "healthy"
+    DEGRADED = "degraded"
+    UNHEALTHY = "unhealthy"
+    UNKNOWN = "unknown"
+
+@dataclass
+class AgentInstance:
+    """Agent instance in the pool"""
+    instance_id: str
+    agent: Any
+    weight: float = 1.0
+    max_connections: int = 100
+    current_connections: int = 0
+    total_requests: int = 0
+    failed_requests: int = 0
+    response_times: deque = field(default_factory=lambda: deque(maxlen=100))
+    health_status: AgentHealth = AgentHealth.UNKNOWN
+    last_health_check: float = 0.0
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    
+    def get_avg_response_time(self) -> float:
+        """Get average response time"""
+        if not self.response_times:
+            return 0.0
+        return statistics.mean(self.response_times)
+    
+    def get_success_rate(self) -> float:
+        """Get success rate"""
+        if self.total_requests == 0:
+            return 1.0
+        return (self.total_requests - self.failed_requests) / self.total_requests
+    
+    def get_load(self) -> float:
+        """Get current load (0.0 to 1.0)"""
+        if self.max_connections == 0:
+            return 1.0
+        return self.current_connections / self.max_connections
+
+@dataclass
+class HealthCheckConfig:
+    """Configuration for health checks"""
+    interval: float = 10.0  # seconds
+    timeout: float = 5.0
+    unhealthy_threshold: int = 3
+    healthy_threshold: int = 2
+    check_function: Optional[Callable] = None
+
+@dataclass
+class LoadBalancerMetrics:
+    """Metrics for load balancer"""
+    total_requests: int = 0
+    successful_requests: int = 0
+    failed_requests: int = 0
+    avg_response_time: float = 0.0
+    requests_per_second: float = 0.0
+    active_connections: int = 0
+    healthy_instances: int = 0
+    total_instances: int = 0
+
+class LoadBalancer:
+    """
+    Load balancer for distributing requests across agent instances
+    
+    Features:
+    - Multiple balancing strategies
+    - Health monitoring
+    - Auto-scaling triggers
+    - Connection pooling
+    """
+    
+    def __init__(
+        self,
+        strategy: LoadBalancingStrategy = LoadBalancingStrategy.LEAST_CONNECTIONS,
+        health_check_config: Optional[HealthCheckConfig] = None
+    ):
+        self.strategy = strategy
+        self.health_check_config = health_check_config or HealthCheckConfig()
+        
+        self.instances: List[AgentInstance] = []
+        self.current_index = 0  # For round-robin
+        self.request_queue: deque = deque()
+        self.metrics = LoadBalancerMetrics()
+        
+        self.lock = threading.Lock()
+        self.running = False
+        self.health_check_thread: Optional[threading.Thread] = None
+        
+    def add_agent(
+        self,
+        agent: Any,
+        instance_id: Optional[str] = None,
+        weight: float = 1.0,
+        max_connections: int = 100
+    ) -> str:
+        """
+        Add agent instance to the pool
+        
+        Args:
+            agent: Agent instance
+            instance_id: Unique identifier
+            weight: Weight for weighted strategies
+            max_connections: Maximum concurrent connections
+            
+        Returns:
+            Instance ID
+        """
+        if instance_id is None:
+            instance_id = f"agent_{len(self.instances)}_{int(time.time())}"
+        
+        instance = AgentInstance(
+            instance_id=instance_id,
+            agent=agent,
+            weight=weight,
+            max_connections=max_connections
+        )
+        
+        with self.lock:
+            self.instances.append(instance)
+            self.metrics.total_instances += 1
+        
+        return instance_id
+    
+    def remove_agent(self, instance_id: str) -> bool:
+        """Remove agent instance from pool"""
+        with self.lock:
+            for i, instance in enumerate(self.instances):
+                if instance.instance_id == instance_id:
+                    self.instances.pop(i)
+                    self.metrics.total_instances -= 1
+                    return True
+        return False
+    
+    def execute(
+        self,
+        request: Dict[str, Any],
+        timeout: Optional[float] = None
+    ) -> Dict[str, Any]:
+        """
+        Execute request using load balancing
+        
+        Args:
+            request: Request to execute
+            timeout: Request timeout
+            
+        Returns:
+            Response from agent
+        """
+        start_time = time.time()
+        
+        # Select agent instance
+        instance = self._select_instance(request)
+        
+        if instance is None:
+            self.metrics.failed_requests += 1
+            return {
+                'success': False,
+                'error': 'No healthy agent instances available',
+                'execution_time': time.time() - start_time
+            }
+        
+        # Execute request
+        try:
+            with self.lock:
+                instance.current_connections += 1
+                self.metrics.active_connections += 1
+            
+            result = self._execute_on_instance(instance, request, timeout)
+            
+            execution_time = time.time() - start_time
+            
+            with self.lock:
+                instance.response_times.append(execution_time)
+                instance.total_requests += 1
+                self.metrics.total_requests += 1
+                
+                if result.get('success', False):
+                    self.metrics.successful_requests += 1
+                else:
+                    instance.failed_requests += 1
+                    self.metrics.failed_requests += 1
+            
+            result['execution_time'] = execution_time
+            result['instance_id'] = instance.instance_id
+            
+            return result
+            
+        except Exception as e:
+            with self.lock:
+                instance.failed_requests += 1
+                self.metrics.failed_requests += 1
+            
+            return {
+                'success': False,
+                'error': str(e),
+                'instance_id': instance.instance_id,
+                'execution_time': time.time() - start_time
+            }
+            
+        finally:
+            with self.lock:
+                instance.current_connections -= 1
+                self.metrics.active_connections -= 1
+    
+    def _select_instance(self, request: Dict[str, Any]) -> Optional[AgentInstance]:
+        """Select agent instance based on strategy"""
+        
+        with self.lock:
+            healthy_instances = [
+                inst for inst in self.instances
+                if inst.health_status == AgentHealth.HEALTHY
+                and inst.current_connections < inst.max_connections
+            ]
+        
+        if not healthy_instances:
+            return None
+        
+        if self.strategy == LoadBalancingStrategy.ROUND_ROBIN:
+            return self._round_robin_select(healthy_instances)
+        
+        elif self.strategy == LoadBalancingStrategy.LEAST_CONNECTIONS:
+            return self._least_connections_select(healthy_instances)
+        
+        elif self.strategy == LoadBalancingStrategy.WEIGHTED_ROUND_ROBIN:
+            return self._weighted_round_robin_select(healthy_instances)
+        
+        elif self.strategy == LoadBalancingStrategy.RESPONSE_TIME:
+            return self._response_time_select(healthy_instances)
+        
+        elif self.strategy == LoadBalancingStrategy.RANDOM:
+            return random.choice(healthy_instances)
+        
+        elif self.strategy == LoadBalancingStrategy.IP_HASH:
+            return self._ip_hash_select(healthy_instances, request)
+        
+        elif self.strategy == LoadBalancingStrategy.LEAST_LOAD:
+            return self._least_load_select(healthy_instances)
+        
+        return healthy_instances[0]
+    
+    def _round_robin_select(self, instances: List[AgentInstance]) -> AgentInstance:
+        """Round-robin selection"""
+        with self.lock:
+            instance = instances[self.current_index % len(instances)]
+            self.current_index += 1
+        return instance
+    
+    def _least_connections_select(self, instances: List[AgentInstance]) -> AgentInstance:
+        """Select instance with least connections"""
+        return min(instances, key=lambda x: x.current_connections)
+    
+    def _weighted_round_robin_select(self, instances: List[AgentInstance]) -> AgentInstance:
+        """Weighted round-robin selection"""
+        total_weight = sum(inst.weight for inst in instances)
+        
+        if total_weight == 0:
+            return instances[0]
+        
+        # Generate random number
+        rand = random.uniform(0, total_weight)
+        cumulative_weight = 0
+        
+        for instance in instances:
+            cumulative_weight += instance.weight
+            if rand <= cumulative_weight:
+                return instance
+        
+        return instances[-1]
+    
+    def _response_time_select(self, instances: List[AgentInstance]) -> AgentInstance:
+        """Select instance with best response time"""
+        return min(instances, key=lambda x: x.get_avg_response_time() or float('inf'))
+    
+    def _ip_hash_select(
+        self,
+        instances: List[AgentInstance],
+        request: Dict[str, Any]
+    ) -> AgentInstance:
+        """Hash-based selection for session affinity"""
+        client_id = request.get('client_id', '')
+        hash_value = hash(client_id) % len(instances)
+        return instances[hash_value]
+    
+    def _least_load_select(self, instances: List[AgentInstance]) -> AgentInstance:
+        """Select instance with least load"""
+        return min(instances, key=lambda x: x.get_load())
+    
+    def _execute_on_instance(
+        self,
+        instance: AgentInstance,
+        request: Dict[str, Any],
+        timeout: Optional[float]
+    ) -> Dict[str, Any]:
+        """Execute request on specific instance"""
+        # In reality, this would call the agent's execution method
+        # For now, simulate execution
+        
+        if hasattr(instance.agent, 'execute'):
+            return instance.agent.execute(request.get('task', ''))
+        
+        # Simulated execution
+        time.sleep(random.uniform(0.01, 0.1))
+        
+        # Simulate occasional failures
+        if random.random() < 0.05:  # 5% failure rate
+            return {'success': False, 'error': 'Simulated failure'}
+        
+        return {
+            'success': True,
+            'result': f"Processed by {instance.instance_id}",
+            'task': request.get('task', '')
+        }
+    
+    def start_health_checks(self):
+        """Start background health check thread"""
+        if self.running:
+            return
+        
+        self.running = True
+        self.health_check_thread = threading.Thread(
+            target=self._health_check_loop,
+            daemon=True
+        )
+        self.health_check_thread.start()
+    
+    def stop_health_checks(self):
+        """Stop health check thread"""
+        self.running = False
+        if self.health_check_thread:
+            self.health_check_thread.join(timeout=5.0)
+    
+    def _health_check_loop(self):
+        """Background health check loop"""
+        while self.running:
+            self._perform_health_checks()
+            time.sleep(self.health_check_config.interval)
+    
+    def _perform_health_checks(self):
+        """Perform health checks on all instances"""
+        with self.lock:
+            instances_to_check = list(self.instances)
+        
+        for instance in instances_to_check:
+            is_healthy = self._check_instance_health(instance)
+            
+            with self.lock:
+                instance.last_health_check = time.time()
+                
+                if is_healthy:
+                    instance.health_status = AgentHealth.HEALTHY
+                else:
+                    # Check failure rate
+                    success_rate = instance.get_success_rate()
+                    if success_rate < 0.5:
+                        instance.health_status = AgentHealth.UNHEALTHY
+                    elif success_rate < 0.8:
+                        instance.health_status = AgentHealth.DEGRADED
+                    else:
+                        instance.health_status = AgentHealth.HEALTHY
+        
+        # Update metrics
+        with self.lock:
+            self.metrics.healthy_instances = sum(
+                1 for inst in self.instances
+                if inst.health_status == AgentHealth.HEALTHY
+            )
+    
+    def _check_instance_health(self, instance: AgentInstance) -> bool:
+        """Check health of a single instance"""
+        if self.health_check_config.check_function:
+            try:
+                return self.health_check_config.check_function(instance.agent)
+            except Exception:
+                return False
+        
+        # Default health check: check if not overloaded
+        return instance.get_load() < 0.9 and instance.get_success_rate() > 0.7
+    
+    def get_metrics(self) -> LoadBalancerMetrics:
+        """Get current load balancer metrics"""
+        with self.lock:
+            # Calculate requests per second
+            if self.metrics.total_requests > 0:
+                # Simple approximation
+                self.metrics.requests_per_second = self.metrics.total_requests / max(
+                    time.time() - (self.instances[0].last_health_check if self.instances else time.time()),
+                    1.0
+                )
+            
+            # Calculate average response time
+            all_times = []
+            for instance in self.instances:
+                all_times.extend(instance.response_times)
+            
+            if all_times:
+                self.metrics.avg_response_time = statistics.mean(all_times)
+            
+            return LoadBalancerMetrics(
+                total_requests=self.metrics.total_requests,
+                successful_requests=self.metrics.successful_requests,
+                failed_requests=self.metrics.failed_requests,
+                avg_response_time=self.metrics.avg_response_time,
+                requests_per_second=self.metrics.requests_per_second,
+                active_connections=self.metrics.active_connections,
+                healthy_instances=self.metrics.healthy_instances,
+                total_instances=self.metrics.total_instances
+            )
+    
+    def get_instance_stats(self) -> List[Dict[str, Any]]:
+        """Get statistics for each instance"""
+        stats = []
+        
+        with self.lock:
+            for instance in self.instances:
+                stats.append({
+                    'instance_id': instance.instance_id,
+                    'health_status': instance.health_status.value,
+                    'current_connections': instance.current_connections,
+                    'total_requests': instance.total_requests,
+                    'failed_requests': instance.failed_requests,
+                    'success_rate': instance.get_success_rate(),
+                    'avg_response_time': instance.get_avg_response_time(),
+                    'load': instance.get_load(),
+                    'weight': instance.weight
+                })
+        
+        return stats
+    
+    def scale_up(self, agent_factory: Callable, count: int = 1) -> List[str]:
+        """
+        Scale up by adding more instances
+        
+        Args:
+            agent_factory: Function that creates new agent instances
+            count: Number of instances to add
+            
+        Returns:
+            List of new instance IDs
+        """
+        new_ids = []
+        
+        for _ in range(count):
+            new_agent = agent_factory()
+            instance_id = self.add_agent(new_agent)
+            new_ids.append(instance_id)
+        
+        return new_ids
+    
+    def scale_down(self, count: int = 1) -> List[str]:
+        """
+        Scale down by removing instances with least load
+        
+        Args:
+            count: Number of instances to remove
+            
+        Returns:
+            List of removed instance IDs
+        """
+        removed_ids = []
+        
+        with self.lock:
+            # Sort by load (ascending)
+            sorted_instances = sorted(self.instances, key=lambda x: x.get_load())
+            
+            for i in range(min(count, len(sorted_instances))):
+                instance = sorted_instances[i]
+                if instance.current_connections == 0:  # Only remove idle instances
+                    removed_ids.append(instance.instance_id)
+        
+        for instance_id in removed_ids:
+            self.remove_agent(instance_id)
+        
+        return removed_ids
+    
+    def should_scale_up(self) -> bool:
+        """Determine if scaling up is needed"""
+        metrics = self.get_metrics()
+        
+        # Scale up if:
+        # - Average load > 70%
+        # - Or response time is degrading
+        avg_load = sum(inst.get_load() for inst in self.instances) / max(len(self.instances), 1)
+        
+        return (avg_load > 0.7 or 
+                metrics.avg_response_time > 1.0 or
+                metrics.healthy_instances < metrics.total_instances * 0.5)
+    
+    def should_scale_down(self) -> bool:
+        """Determine if scaling down is possible"""
+        # Scale down if average load < 30% and we have more than 1 instance
+        avg_load = sum(inst.get_load() for inst in self.instances) / max(len(self.instances), 1)
+        
+        return avg_load < 0.3 and len(self.instances) > 1
+
+
+# Simple mock agent for demonstration
+class SimpleAgent:
+    """Simple agent for load balancer demonstration"""
+    
+    def __init__(self, agent_id: str):
+        self.agent_id = agent_id
+    
+    def execute(self, task: str) -> Dict[str, Any]:
+        """Execute a task"""
+        time.sleep(random.uniform(0.01, 0.05))
+        return {
+            'success': True,
+            'result': f"Agent {self.agent_id} processed: {task}",
+            'agent_id': self.agent_id
+        }
+
+
+def main():
+    """Demonstrate load balancing pattern"""
+    print("=" * 60)
+    print("Load Balancing Pattern Demonstration")
+    print("=" * 60)
+    
+    print("\n1. Creating Load Balancer with Multiple Strategies")
+    print("-" * 60)
+    
+    # Test different strategies
+    strategies = [
+        LoadBalancingStrategy.ROUND_ROBIN,
+        LoadBalancingStrategy.LEAST_CONNECTIONS,
+        LoadBalancingStrategy.RANDOM
+    ]
+    
+    for strategy in strategies:
+        print(f"\nTesting {strategy.value}:")
+        
+        balancer = LoadBalancer(strategy=strategy)
+        
+        # Add agents
+        for i in range(3):
+            agent = SimpleAgent(f"agent_{i}")
+            balancer.add_agent(agent, weight=i+1)  # Different weights
+        
+        # Set all to healthy
+        for instance in balancer.instances:
+            instance.health_status = AgentHealth.HEALTHY
+        
+        # Execute requests
+        results = []
+        for i in range(10):
+            result = balancer.execute({'task': f'task_{i}'})
+            results.append(result['instance_id'])
+        
+        # Show distribution
+        from collections import Counter
+        distribution = Counter(results)
+        print(f"  Distribution: {dict(distribution)}")
+    
+    print("\n" + "=" * 60)
+    print("2. Load Balancer with Health Checks")
+    print("=" * 60)
+    
+    balancer = LoadBalancer(
+        strategy=LoadBalancingStrategy.LEAST_CONNECTIONS
+    )
+    
+    # Add agents
+    agent_ids = []
+    for i in range(4):
+        agent = SimpleAgent(f"agent_{i}")
+        instance_id = balancer.add_agent(agent, max_connections=10)
+        agent_ids.append(instance_id)
+    
+    # Start health checks
+    balancer.start_health_checks()
+    
+    # Manually set health statuses for demonstration
+    balancer.instances[0].health_status = AgentHealth.HEALTHY
+    balancer.instances[1].health_status = AgentHealth.HEALTHY
+    balancer.instances[2].health_status = AgentHealth.DEGRADED
+    balancer.instances[3].health_status = AgentHealth.UNHEALTHY
+    
+    print("\nInstance Health Status:")
+    for instance in balancer.instances:
+        print(f"  {instance.instance_id}: {instance.health_status.value}")
+    
+    # Execute requests
+    print("\nExecuting 20 requests...")
+    for i in range(20):
+        balancer.execute({'task': f'task_{i}'})
+    
+    metrics = balancer.get_metrics()
+    print(f"\nMetrics after execution:")
+    print(f"  Total Requests: {metrics.total_requests}")
+    print(f"  Successful: {metrics.successful_requests}")
+    print(f"  Failed: {metrics.failed_requests}")
+    print(f"  Active Connections: {metrics.active_connections}")
+    print(f"  Healthy Instances: {metrics.healthy_instances}/{metrics.total_instances}")
+    print(f"  Avg Response Time: {metrics.avg_response_time:.4f}s")
+    
+    balancer.stop_health_checks()
+    
+    print("\n" + "=" * 60)
+    print("3. Instance Statistics")
+    print("=" * 60)
+    
+    stats = balancer.get_instance_stats()
+    
+    for stat in sorted(stats, key=lambda x: x['total_requests'], reverse=True):
+        print(f"\n{stat['instance_id']}:")
+        print(f"  Health: {stat['health_status']}")
+        print(f"  Requests: {stat['total_requests']}")
+        print(f"  Success Rate: {stat['success_rate']:.2%}")
+        print(f"  Avg Response Time: {stat['avg_response_time']:.4f}s")
+        print(f"  Current Load: {stat['load']:.2%}")
+    
+    print("\n" + "=" * 60)
+    print("4. Auto-scaling")
+    print("=" * 60)
+    
+    def agent_factory():
+        return SimpleAgent(f"autoscaled_{random.randint(1000, 9999)}")
+    
+    print(f"\nCurrent instances: {len(balancer.instances)}")
+    print(f"Should scale up: {balancer.should_scale_up()}")
+    print(f"Should scale down: {balancer.should_scale_down()}")
+    
+    # Simulate high load
+    for instance in balancer.instances:
+        instance.current_connections = 8  # 80% of max (10)
+    
+    print(f"\nAfter simulating high load:")
+    print(f"Should scale up: {balancer.should_scale_up()}")
+    
+    if balancer.should_scale_up():
+        new_ids = balancer.scale_up(agent_factory, count=2)
+        print(f"Scaled up: Added {len(new_ids)} instances")
+        print(f"New instances: {new_ids}")
+    
+    print(f"Total instances now: {len(balancer.instances)}")
+    
+    # Simulate low load
+    for instance in balancer.instances:
+        instance.current_connections = 0
+    
+    print(f"\nAfter simulating low load:")
+    print(f"Should scale down: {balancer.should_scale_down()}")
+    
+    if balancer.should_scale_down():
+        removed_ids = balancer.scale_down(count=2)
+        print(f"Scaled down: Removed {len(removed_ids)} instances")
+        print(f"Removed instances: {removed_ids}")
+    
+    print(f"Total instances now: {len(balancer.instances)}")
+    
+    print("\n" + "=" * 60)
+    print("5. Weighted Round Robin")
+    print("=" * 60)
+    
+    weighted_balancer = LoadBalancer(
+        strategy=LoadBalancingStrategy.WEIGHTED_ROUND_ROBIN
+    )
+    
+    # Add agents with different weights
+    weights = [1.0, 2.0, 3.0]
+    for i, weight in enumerate(weights):
+        agent = SimpleAgent(f"weighted_agent_{i}")
+        weighted_balancer.add_agent(agent, weight=weight)
+        weighted_balancer.instances[i].health_status = AgentHealth.HEALTHY
+    
+    # Execute requests
+    results = []
+    for i in range(60):
+        result = weighted_balancer.execute({'task': f'task_{i}'})
+        results.append(result['instance_id'])
+    
+    # Show distribution
+    from collections import Counter
+    distribution = Counter(results)
+    
+    print("\nWeighted Distribution (60 requests):")
+    print(f"  Weights: {weights}")
+    print(f"  Expected ratio: 1:2:3")
+    print(f"  Actual distribution:")
+    for instance_id, count in sorted(distribution.items()):
+        percentage = count / 60 * 100
+        print(f"    {instance_id}: {count} requests ({percentage:.1f}%)")
+    
+    print("\n" + "=" * 60)
+    print("Load Balancing demonstration complete!")
+    print("=" * 60)
+
+
+if __name__ == "__main__":
+    main()
+```
+
+This implementation provides:
+
+1. **7 load balancing strategies** (round-robin, least connections, weighted, response time, random, IP hash, least load)
+2. **Health monitoring** with configurable health checks
+3. **Auto-scaling** support with scale-up/scale-down logic
+4. **Comprehensive metrics** tracking requests, response times, and instance health
+5. **Thread-safe** operation for concurrent requests
+6. **Connection pooling** with configurable limits
+
+Would you like me to continue with **Pattern 79: Batch Processing Agent** and **Pattern 29: Semantic Memory Networks**?
+
+
+
+
+
+
+I'll continue with **Pattern 79: Batch Processing Agent** and **Pattern 29: Semantic Memory Networks**.
+
+## Pattern 79: Batch Processing Agent
+
+```python patterns/79_batch_processing.py
+"""
+Pattern 79: Batch Processing Agent
+
+Description:
+    Efficiently processes multiple tasks in batches to optimize resource
+    utilization, reduce overhead, and improve throughput.
+
+Use Cases:
+    - Bulk data processing
+    - Scheduled job execution
+    - High-throughput systems
+    - Cost optimization
+
+Key Features:
+    - Dynamic batch sizing
+    - Priority-based batching
+    - Error handling and retry
+    - Progress tracking
+
+Example:
+    >>> agent = BatchProcessingAgent(batch_size=10)
+    >>> agent.add_task(task1)
+    >>> agent.add_task(task2)
+    >>> results = agent.process_batch()
+"""
+
+from dataclasses import dataclass, field
+from typing import List, Dict, Any, Optional, Callable
+from enum import Enum
+import time
+import threading
+from collections import defaultdict, deque
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import asyncio
+
+class TaskPriority(Enum):
+    """Priority levels for tasks"""
+    LOW = 1
+    NORMAL = 2
+    HIGH = 3
+    CRITICAL = 4
+
+class TaskStatus(Enum):
+    """Status of a task"""
+    PENDING = "pending"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    RETRYING = "retrying"
+
+class BatchStrategy(Enum):
+    """Batching strategies"""
+    SIZE_BASED = "size_based"  # Fixed size batches
+    TIME_BASED = "time_based"  # Time window batches
+    PRIORITY_BASED = "priority_based"  # Group by priority
+    DYNAMIC = "dynamic"  # Adaptive batching
+
+@dataclass
+class Task:
+    """Individual task in the batch"""
+    task_id: str
+    data: Any
+    priority: TaskPriority = TaskPriority.NORMAL
+    status: TaskStatus = TaskStatus.PENDING
+    retry_count: int = 0
+    max_retries: int = 3
+    created_at: float = field(default_factory=time.time)
+    started_at: Optional[float] = None
+    completed_at: Optional[float] = None
+    result: Optional[Any] = None
+    error: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+@dataclass
+class Batch:
+    """A batch of tasks"""
+    batch_id: str
+    tasks: List[Task]
+    created_at: float = field(default_factory=time.time)
+    started_at: Optional[float] = None
+    completed_at: Optional[float] = None
+    total_tasks: int = 0
+    completed_tasks: int = 0
+    failed_tasks: int = 0
+
+@dataclass
+class BatchConfig:
+    """Configuration for batch processing"""
+    batch_size: int = 10
+    max_wait_time: float = 5.0  # seconds
+    parallel_workers: int = 4
+    strategy: BatchStrategy = BatchStrategy.SIZE_BASED
+    enable_retries: bool = True
+    enable_priority: bool = True
+
+class BatchProcessingAgent:
+    """
+    Agent that processes tasks in batches
+    
+    Features:
+    - Multiple batching strategies
+    - Priority-based processing
+    - Automatic retry logic
+    - Progress tracking
+    """
+    
+    def __init__(
+        self,
+        config: Optional[BatchConfig] = None,
+        processor: Optional[Callable] = None
+    ):
+        self.config = config or BatchConfig()
+        self.processor = processor or self._default_processor
+        
+        self.task_queue: Dict[TaskPriority, deque] = {
+            priority: deque() for priority in TaskPriority
+        }
+        self.active_batches: Dict[str, Batch] = {}
+        self.completed_batches: List[Batch] = []
+        
+        self.lock = threading.Lock()
+        self.batch_counter = 0
+        self.task_counter = 0
+        
+        self.running = False
+        self.processing_thread: Optional[threading.Thread] = None
+        
+    def add_task(
+        self,
+        data: Any,
+        priority: TaskPriority = TaskPriority.NORMAL,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """
+        Add a task to the queue
+        
+        Args:
+            data: Task data
+            priority: Task priority
+            metadata: Optional metadata
+            
+        Returns:
+            Task ID
+        """
+        with self.lock:
+            self.task_counter += 1
+            task_id = f"task_{self.task_counter}_{int(time.time())}"
+            
+            task = Task(
+                task_id=task_id,
+                data=data,
+                priority=priority,
+                metadata=metadata or {}
+            )
+            
+            self.task_queue[priority].append(task)
+        
+        return task_id
+    
+    def add_tasks_bulk(
+        self,
+        tasks_data: List[Dict[str, Any]]
+    ) -> List[str]:
+        """
+        Add multiple tasks at once
+        
+        Args:
+            tasks_data: List of {data, priority?, metadata?}
+            
+        Returns:
+            List of task IDs
+        """
+        task_ids = []
+        
+        for task_data in tasks_data:
+            task_id = self.add_task(
+                data=task_data['data'],
+                priority=task_data.get('priority', TaskPriority.NORMAL),
+                metadata=task_data.get('metadata')
+            )
+            task_ids.append(task_id)
+        
+        return task_ids
+    
+    def process_batch(self, batch_id: Optional[str] = None) -> Batch:
+        """
+        Process a single batch
+        
+        Args:
+            batch_id: Optional specific batch to process
+            
+        Returns:
+            Processed batch
+        """
+        # Create batch
+        if batch_id and batch_id in self.active_batches:
+            batch = self.active_batches[batch_id]
+        else:
+            batch = self._create_batch()
+        
+        if not batch.tasks:
+            return batch
+        
+        batch.started_at = time.time()
+        
+        # Process based on strategy
+        if self.config.parallel_workers > 1:
+            self._process_batch_parallel(batch)
+        else:
+            self._process_batch_sequential(batch)
+        
+        batch.completed_at = time.time()
+        
+        # Move to completed
+        with self.lock:
+            if batch.batch_id in self.active_batches:
+                del self.active_batches[batch.batch_id]
+            self.completed_batches.append(batch)
+        
+        return batch
+    
+    def _create_batch(self) -> Batch:
+        """Create a new batch from queued tasks"""
+        with self.lock:
+            self.batch_counter += 1
+            batch_id = f"batch_{self.batch_counter}_{int(time.time())}"
+            
+            tasks = []
+            
+            if self.config.strategy == BatchStrategy.PRIORITY_BASED:
+                # Process highest priority first
+                for priority in sorted(TaskPriority, key=lambda x: x.value, reverse=True):
+                    while len(tasks) < self.config.batch_size and self.task_queue[priority]:
+                        tasks.append(self.task_queue[priority].popleft())
+                    if len(tasks) >= self.config.batch_size:
+                        break
+            
+            else:
+                # Mix priorities
+                total_needed = self.config.batch_size
+                for priority in TaskPriority:
+                    queue = self.task_queue[priority]
+                    while queue and len(tasks) < total_needed:
+                        tasks.append(queue.popleft())
+            
+            batch = Batch(
+                batch_id=batch_id,
+                tasks=tasks,
+                total_tasks=len(tasks)
+            )
+            
+            self.active_batches[batch_id] = batch
+        
+        return batch
+    
+    def _process_batch_sequential(self, batch: Batch):
+        """Process batch tasks sequentially"""
+        for task in batch.tasks:
+            self._process_single_task(task, batch)
+    
+    def _process_batch_parallel(self, batch: Batch):
+        """Process batch tasks in parallel"""
+        with ThreadPoolExecutor(max_workers=self.config.parallel_workers) as executor:
+            futures = {
+                executor.submit(self._process_single_task, task, batch): task
+                for task in batch.tasks
+            }
+            
+            for future in as_completed(futures):
+                try:
+                    future.result()
+                except Exception as e:
+                    task = futures[future]
+                    task.error = str(e)
+                    task.status = TaskStatus.FAILED
+    
+    def _process_single_task(self, task: Task, batch: Batch):
+        """Process a single task"""
+        task.status = TaskStatus.PROCESSING
+        task.started_at = time.time()
+        
+        try:
+            # Process the task
+            result = self.processor(task.data, task.metadata)
+            
+            task.result = result
+            task.status = TaskStatus.COMPLETED
+            task.completed_at = time.time()
+            
+            with self.lock:
+                batch.completed_tasks += 1
+        
+        except Exception as e:
+            task.error = str(e)
+            
+            # Retry logic
+            if self.config.enable_retries and task.retry_count < task.max_retries:
+                task.retry_count += 1
+                task.status = TaskStatus.RETRYING
+                
+                # Re-add to queue
+                with self.lock:
+                    self.task_queue[task.priority].append(task)
+            else:
+                task.status = TaskStatus.FAILED
+                task.completed_at = time.time()
+                
+                with self.lock:
+                    batch.failed_tasks += 1
+    
+    def _default_processor(self, data: Any, metadata: Dict[str, Any]) -> Any:
+        """Default task processor (override this)"""
+        # Simulate processing
+        time.sleep(0.01)
+        
+        # Simulate occasional failures
+        import random
+        if random.random() < 0.05:
+            raise Exception("Simulated processing error")
+        
+        return f"Processed: {data}"
+    
+    def start_auto_processing(self):
+        """Start automatic batch processing in background"""
+        if self.running:
+            return
+        
+        self.running = True
+        self.processing_thread = threading.Thread(
+            target=self._auto_processing_loop,
+            daemon=True
+        )
+        self.processing_thread.start()
+    
+    def stop_auto_processing(self):
+        """Stop automatic batch processing"""
+        self.running = False
+        if self.processing_thread:
+            self.processing_thread.join(timeout=5.0)
+    
+    def _auto_processing_loop(self):
+        """Background loop for automatic batch processing"""
+        while self.running:
+            # Check if we should process a batch
+            should_process = False
+            
+            with self.lock:
+                total_tasks = sum(len(q) for q in self.task_queue.values())
+                
+                if self.config.strategy == BatchStrategy.SIZE_BASED:
+                    should_process = total_tasks >= self.config.batch_size
+                
+                elif self.config.strategy == BatchStrategy.TIME_BASED:
+                    # Check oldest task
+                    oldest_task_time = None
+                    for queue in self.task_queue.values():
+                        if queue:
+                            oldest_task_time = queue[0].created_at
+                            break
+                    
+                    if oldest_task_time:
+                        wait_time = time.time() - oldest_task_time
+                        should_process = wait_time >= self.config.max_wait_time
+                
+                elif self.config.strategy == BatchStrategy.DYNAMIC:
+                    # Adaptive: process if batch is full OR wait time exceeded
+                    should_process = total_tasks >= self.config.batch_size
+                    
+                    if not should_process and total_tasks > 0:
+                        oldest_task_time = None
+                        for queue in self.task_queue.values():
+                            if queue:
+                                oldest_task_time = queue[0].created_at
+                                break
+                        
+                        if oldest_task_time:
+                            wait_time = time.time() - oldest_task_time
+                            should_process = wait_time >= self.config.max_wait_time
+            
+            if should_process:
+                self.process_batch()
+            
+            time.sleep(0.1)  # Small sleep to prevent tight loop
+    
+    def get_queue_status(self) -> Dict[str, Any]:
+        """Get current queue status"""
+        with self.lock:
+            queue_sizes = {
+                priority.name: len(queue)
+                for priority, queue in self.task_queue.items()
+            }
+            
+            total_queued = sum(queue_sizes.values())
+            
+            active_tasks = sum(
+                len(batch.tasks) for batch in self.active_batches.values()
+            )
+        
+        return {
+            'total_queued': total_queued,
+            'queue_by_priority': queue_sizes,
+            'active_batches': len(self.active_batches),
+            'active_tasks': active_tasks,
+            'completed_batches': len(self.completed_batches)
+        }
+    
+    def get_batch_statistics(self) -> Dict[str, Any]:
+        """Get batch processing statistics"""
+        if not self.completed_batches:
+            return {'message': 'No completed batches yet'}
+        
+        total_tasks = sum(b.total_tasks for b in self.completed_batches)
+        total_completed = sum(b.completed_tasks for b in self.completed_batches)
+        total_failed = sum(b.failed_tasks for b in self.completed_batches)
+        
+        processing_times = []
+        for batch in self.completed_batches:
+            if batch.started_at and batch.completed_at:
+                processing_times.append(batch.completed_at - batch.started_at)
+        
+        avg_processing_time = (
+            sum(processing_times) / len(processing_times)
+            if processing_times else 0
+        )
+        
+        return {
+            'total_batches': len(self.completed_batches),
+            'total_tasks_processed': total_tasks,
+            'successful_tasks': total_completed,
+            'failed_tasks': total_failed,
+            'success_rate': total_completed / total_tasks if total_tasks > 0 else 0,
+            'avg_batch_processing_time': avg_processing_time,
+            'avg_tasks_per_batch': total_tasks / len(self.completed_batches),
+            'throughput': total_completed / sum(processing_times) if processing_times else 0
+        }
+    
+    def get_task_status(self, task_id: str) -> Optional[Dict[str, Any]]:
+        """Get status of a specific task"""
+        # Check active batches
+        for batch in self.active_batches.values():
+            for task in batch.tasks:
+                if task.task_id == task_id:
+                    return self._task_to_dict(task, batch.batch_id)
+        
+        # Check completed batches
+        for batch in self.completed_batches:
+            for task in batch.tasks:
+                if task.task_id == task_id:
+                    return self._task_to_dict(task, batch.batch_id)
+        
+        # Check queues
+        for priority, queue in self.task_queue.items():
+            for task in queue:
+                if task.task_id == task_id:
+                    return self._task_to_dict(task, None)
+        
+        return None
+    
+    def _task_to_dict(self, task: Task, batch_id: Optional[str]) -> Dict[str, Any]:
+        """Convert task to dictionary"""
+        return {
+            'task_id': task.task_id,
+            'batch_id': batch_id,
+            'status': task.status.value,
+            'priority': task.priority.name,
+            'retry_count': task.retry_count,
+            'created_at': task.created_at,
+            'started_at': task.started_at,
+            'completed_at': task.completed_at,
+            'processing_time': (
+                task.completed_at - task.started_at
+                if task.started_at and task.completed_at else None
+            ),
+            'result': task.result,
+            'error': task.error
+        }
+    
+    def wait_for_completion(self, timeout: Optional[float] = None) -> bool:
+        """Wait for all tasks to complete"""
+        start_time = time.time()
+        
+        while True:
+            status = self.get_queue_status()
+            
+            if status['total_queued'] == 0 and status['active_batches'] == 0:
+                return True
+            
+            if timeout and (time.time() - start_time) > timeout:
+                return False
+            
+            time.sleep(0.1)
+
+
+def main():
+    """Demonstrate batch processing pattern"""
+    print("=" * 60)
+    print("Batch Processing Agent Demonstration")
+    print("=" * 60)
+    
+    print("\n1. Basic Batch Processing")
+    print("-" * 60)
+    
+    # Create agent
+    agent = BatchProcessingAgent(
+        config=BatchConfig(batch_size=5, parallel_workers=2)
+    )
+    
+    # Add tasks
+    task_ids = []
+    for i in range(15):
+        task_id = agent.add_task(
+            data=f"task_data_{i}",
+            priority=TaskPriority.NORMAL
+        )
+        task_ids.append(task_id)
+    
+    print(f"Added {len(task_ids)} tasks")
+    
+    status = agent.get_queue_status()
+    print(f"Queued tasks: {status['total_queued']}")
+    
+    # Process first batch
+    print("\nProcessing first batch...")
+    batch = agent.process_batch()
+    
+    print(f"Batch {batch.batch_id}:")
+    print(f"  Total tasks: {batch.total_tasks}")
+    print(f"  Completed: {batch.completed_tasks}")
+    print(f"  Failed: {batch.failed_tasks}")
+    print(f"  Processing time: {batch.completed_at - batch.started_at:.3f}s")
+    
+    print("\n" + "=" * 60)
+    print("2. Priority-Based Processing")
+    print("=" * 60)
+    
+    priority_agent = BatchProcessingAgent(
+        config=BatchConfig(
+            batch_size=10,
+            strategy=BatchStrategy.PRIORITY_BASED
+        )
+    )
+    
+    # Add tasks with different priorities
+    priorities = [
+        (TaskPriority.LOW, 5),
+        (TaskPriority.NORMAL, 5),
+        (TaskPriority.HIGH, 3),
+        (TaskPriority.CRITICAL, 2)
+    ]
+    
+    for priority, count in priorities:
+        for i in range(count):
+            priority_agent.add_task(
+                data=f"{priority.name}_task_{i}",
+                priority=priority
+            )
+    
+    status = priority_agent.get_queue_status()
+    print("\nQueue status:")
+    for priority, count in status['queue_by_priority'].items():
+        print(f"  {priority}: {count} tasks")
+    
+    # Process batch (should prioritize CRITICAL and HIGH)
+    batch = priority_agent.process_batch()
+    
+    print(f"\nProcessed batch with {batch.total_tasks} tasks:")
+    priority_counts = defaultdict(int)
+    for task in batch.tasks:
+        priority_counts[task.priority.name] += 1
+    
+    for priority, count in sorted(priority_counts.items()):
+        print(f"  {priority}: {count} tasks")
+    
+    print("\n" + "=" * 60)
+    print("3. Automatic Background Processing")
+    print("=" * 60)
+    
+    auto_agent = BatchProcessingAgent(
+        config=BatchConfig(
+            batch_size=5,
+            strategy=BatchStrategy.DYNAMIC,
+            max_wait_time=2.0
+        )
+    )
+    
+    # Start auto-processing
+    auto_agent.start_auto_processing()
+    print("Started automatic batch processing")
+    
+    # Add tasks gradually
+    print("\nAdding tasks gradually...")
+    for i in range(20):
+        auto_agent.add_task(data=f"auto_task_{i}")
+        time.sleep(0.1)  # Simulate gradual arrival
+        
+        if i % 5 == 0:
+            status = auto_agent.get_queue_status()
+            print(f"  After {i+1} tasks: "
+                  f"{status['completed_batches']} batches completed, "
+                  f"{status['total_queued']} queued")
+    
+    # Wait for completion
+    print("\nWaiting for all tasks to complete...")
+    auto_agent.wait_for_completion(timeout=10.0)
+    
+    auto_agent.stop_auto_processing()
+    
+    stats = auto_agent.get_batch_statistics()
+    print(f"\nFinal statistics:")
+    print(f"  Total batches: {stats['total_batches']}")
+    print(f"  Tasks processed: {stats['total_tasks_processed']}")
+    print(f"  Success rate: {stats['success_rate']:.2%}")
+    print(f"  Avg batch time: {stats['avg_batch_processing_time']:.3f}s")
+    print(f"  Throughput: {stats['throughput']:.2f} tasks/sec")
+    
+    print("\n" + "=" * 60)
+    print("4. Bulk Task Addition")
+    print("=" * 60)
+    
+    bulk_agent = BatchProcessingAgent()
+    
+    # Prepare bulk tasks
+    bulk_tasks = [
+        {
+            'data': f"bulk_task_{i}",
+            'priority': TaskPriority.HIGH if i % 3 == 0 else TaskPriority.NORMAL,
+            'metadata': {'batch_num': i // 10}
+        }
+        for i in range(50)
+    ]
+    
+    # Add in bulk
+    task_ids = bulk_agent.add_tasks_bulk(bulk_tasks)
+    print(f"Added {len(task_ids)} tasks in bulk")
+    
+    # Process all batches
+    batches_processed = 0
+    while bulk_agent.get_queue_status()['total_queued'] > 0:
+        bulk_agent.process_batch()
+        batches_processed += 1
+    
+    print(f"Processed {batches_processed} batches")
+    
+    stats = bulk_agent.get_batch_statistics()
+    print(f"Success rate: {stats['success_rate']:.2%}")
+    print(f"Avg tasks per batch: {stats['avg_tasks_per_batch']:.1f}")
+    
+    print("\n" + "=" * 60)
+    print("5. Task Status Tracking")
+    print("=" * 60)
+    
+    # Check specific task status
+    sample_task_id = task_ids[0]
+    task_status = bulk_agent.get_task_status(sample_task_id)
+    
+    if task_status:
+        print(f"\nTask {sample_task_id}:")
+        print(f"  Status: {task_status['status']}")
+        print(f"  Priority: {task_status['priority']}")
+        print(f"  Batch: {task_status['batch_id']}")
+        print(f"  Processing time: {task_status['processing_time']:.4f}s")
+        print(f"  Result: {task_status['result']}")
+    
+    print("\n" + "=" * 60)
+    print("6. Error Handling and Retries")
+    print("=" * 60)
+    
+    def failing_processor(data: Any, metadata: Dict[str, Any]) -> Any:
+        """Processor that fails sometimes"""
+        import random
+        if random.random() < 0.3:  # 30% failure rate
+            raise Exception(f"Failed to process {data}")
+        return f"Success: {data}"
+    
+    retry_agent = BatchProcessingAgent(
+        config=BatchConfig(
+            batch_size=10,
+            enable_retries=True,
+            parallel_workers=2
+        ),
+        processor=failing_processor
+    )
+    
+    # Add tasks
+    for i in range(20):
+        retry_agent.add_task(data=f"risky_task_{i}")
+    
+    # Process batches
+    while retry_agent.get_queue_status()['total_queued'] > 0:
+        retry_agent.process_batch()
+    
+    stats = retry_agent.get_batch_statistics()
+    print(f"\nWith retry logic:")
+    print(f"  Tasks processed: {stats['total_tasks_processed']}")
+    print(f"  Successful: {stats['successful_tasks']}")
+    print(f"  Failed: {stats['failed_tasks']}")
+    print(f"  Success rate: {stats['success_rate']:.2%}")
+    
+    print("\n" + "=" * 60)
+    print("Batch Processing demonstration complete!")
+    print("=" * 60)
+
+
+if __name__ == "__main__":
+    main()
+```
+
+This implementation provides:
+
+1. **4 batching strategies** (size-based, time-based, priority-based, dynamic)
+2. **Priority queue system** with 4 priority levels
+3. **Automatic retry logic** with configurable max retries
+4. **Parallel processing** using ThreadPoolExecutor
+5. **Background auto-processing** with configurable triggers
+6. **Comprehensive tracking** of task and batch status
+7. **Bulk operations** for efficient task addition
+
+Would you like me to continue with **Pattern 29: Semantic Memory Networks**?
+
+
+
+
+
+I'll continue with **Pattern 29: Semantic Memory Networks**, **Pattern 30: Episodic Memory Retrieval**, and **Pattern 31: Memory Consolidation** to complete the Memory & State Management category.
+
+## Pattern 29: Semantic Memory Networks
+
+```python patterns/29_semantic_memory_networks.py
+"""
+Pattern 29: Semantic Memory Networks
+
+Description:
+    Implements a graph-based semantic memory system that stores concepts
+    and their relationships, enabling associative retrieval and reasoning.
+
+Use Cases:
+    - Knowledge representation
+    - Concept relationship mapping
+    - Semantic search and reasoning
+    - Context-aware retrieval
+
+Key Features:
+    - Graph-based concept storage
+    - Relationship typing and weighting
+    - Associative spreading activation
+    - Semantic similarity search
+
+Example:
+    >>> memory = SemanticMemoryNetwork()
+    >>> memory.add_concept("dog", {"type": "animal"})
+    >>> memory.add_relation("dog", "mammal", "is_a", weight=0.9)
+    >>> results = memory.query("dog")
+"""
+
+from dataclasses import dataclass, field
+from typing import List, Dict, Any, Optional, Set, Tuple
+from enum import Enum
+import math
+from collections import defaultdict, deque
+import numpy as np
+
+class RelationType(Enum):
+    """Types of semantic relationships"""
+    IS_A = "is_a"  # Taxonomic
+    PART_OF = "part_of"  # Meronymic
+    HAS_PROPERTY = "has_property"  # Attribute
+    CAUSES = "causes"  # Causal
+    SIMILAR_TO = "similar_to"  # Analogical
+    OPPOSITE_OF = "opposite_of"  # Antonymic
+    RELATED_TO = "related_to"  # General association
+
+@dataclass
+class Concept:
+    """A concept node in semantic memory"""
+    concept_id: str
+    name: str
+    properties: Dict[str, Any] = field(default_factory=dict)
+    embedding: Optional[np.ndarray] = None
+    activation_level: float = 0.0
+    access_count: int = 0
+    last_accessed: float = 0.0
+    created_at: float = 0.0
+
+@dataclass
+class Relation:
+    """A relationship between concepts"""
+    source_id: str
+    target_id: str
+    relation_type: RelationType
+    weight: float = 1.0  # Strength of relationship
+    bidirectional: bool = False
+    properties: Dict[str, Any] = field(default_factory=dict)
+
+@dataclass
+class QueryResult:
+    """Result of a semantic query"""
+    concept: Concept
+    relevance_score: float
+    path_from_query: List[str] = field(default_factory=list)
+    activation_trace: Dict[str, float] = field(default_factory=dict)
+
+class SemanticMemoryNetwork:
+    """
+    Graph-based semantic memory system
+    
+    Features:
+    - Concept graph with typed relationships
+    - Spreading activation for retrieval
+    - Semantic similarity search
+    - Path finding between concepts
+    """
+    
+    def __init__(
+        self,
+        decay_rate: float = 0.1,
+        activation_threshold: float = 0.1
+    ):
+        self.concepts: Dict[str, Concept] = {}
+        self.relations: List[Relation] = []
+        self.relation_index: Dict[str, List[Relation]] = defaultdict(list)
+        
+        self.decay_rate = decay_rate
+        self.activation_threshold = activation_threshold
+        
+        self.embedding_dim = 128
+        
+    def add_concept(
+        self,
+        name: str,
+        properties: Optional[Dict[str, Any]] = None,
+        concept_id: Optional[str] = None
+    ) -> str:
+        """
+        Add a concept to semantic memory
+        
+        Args:
+            name: Concept name
+            properties: Concept properties
+            concept_id: Optional ID (generated if not provided)
+            
+        Returns:
+            Concept ID
+        """
+        import time
+        
+        if concept_id is None:
+            concept_id = f"concept_{len(self.concepts)}_{name.lower().replace(' ', '_')}"
+        
+        if concept_id in self.concepts:
+            # Update existing concept
+            self.concepts[concept_id].properties.update(properties or {})
+        else:
+            # Create new concept
+            concept = Concept(
+                concept_id=concept_id,
+                name=name,
+                properties=properties or {},
+                embedding=self._generate_embedding(name, properties or {}),
+                created_at=time.time()
+            )
+            self.concepts[concept_id] = concept
+        
+        return concept_id
+    
+    def add_relation(
+        self,
+        source: str,
+        target: str,
+        relation_type: RelationType,
+        weight: float = 1.0,
+        bidirectional: bool = False,
+        properties: Optional[Dict[str, Any]] = None
+    ) -> bool:
+        """
+        Add a relationship between concepts
+        
+        Args:
+            source: Source concept ID or name
+            target: Target concept ID or name
+            relation_type: Type of relationship
+            weight: Relationship strength (0-1)
+            bidirectional: If True, creates reverse relation
+            properties: Additional properties
+            
+        Returns:
+            Success status
+        """
+        # Resolve concept IDs
+        source_id = self._resolve_concept_id(source)
+        target_id = self._resolve_concept_id(target)
+        
+        if not source_id or not target_id:
+            return False
+        
+        # Create relation
+        relation = Relation(
+            source_id=source_id,
+            target_id=target_id,
+            relation_type=relation_type,
+            weight=weight,
+            bidirectional=bidirectional,
+            properties=properties or {}
+        )
+        
+        self.relations.append(relation)
+        self.relation_index[source_id].append(relation)
+        
+        if bidirectional:
+            reverse_relation = Relation(
+                source_id=target_id,
+                target_id=source_id,
+                relation_type=relation_type,
+                weight=weight,
+                bidirectional=False,
+                properties=properties or {}
+            )
+            self.relations.append(reverse_relation)
+            self.relation_index[target_id].append(reverse_relation)
+        
+        return True
+    
+    def query(
+        self,
+        query_text: str,
+        max_results: int = 10,
+        use_spreading_activation: bool = True
+    ) -> List[QueryResult]:
+        """
+        Query semantic memory
+        
+        Args:
+            query_text: Query string
+            max_results: Maximum results to return
+            use_spreading_activation: Use activation spreading
+            
+        Returns:
+            List of query results
+        """
+        # Find initial concepts matching query
+        initial_concepts = self._find_matching_concepts(query_text)
+        
+        if not initial_concepts:
+            return []
+        
+        if use_spreading_activation:
+            # Use spreading activation
+            activation_map = self._spread_activation(
+                initial_concepts,
+                max_iterations=3
+            )
+        else:
+            # Direct matching only
+            activation_map = {
+                concept_id: 1.0
+                for concept_id in initial_concepts
+            }
+        
+        # Create results
+        results = []
+        for concept_id, activation in activation_map.items():
+            if activation >= self.activation_threshold:
+                concept = self.concepts[concept_id]
+                
+                results.append(QueryResult(
+                    concept=concept,
+                    relevance_score=activation,
+                    path_from_query=self._find_path(
+                        initial_concepts[0], concept_id
+                    ) if initial_concepts else [],
+                    activation_trace=activation_map
+                ))
+        
+        # Sort by relevance
+        results.sort(key=lambda x: x.relevance_score, reverse=True)
+        
+        return results[:max_results]
+    
+    def find_related_concepts(
+        self,
+        concept: str,
+        relation_types: Optional[List[RelationType]] = None,
+        max_depth: int = 2
+    ) -> List[Tuple[Concept, List[Relation]]]:
+        """
+        Find concepts related to a given concept
+        
+        Args:
+            concept: Concept ID or name
+            relation_types: Filter by relation types
+            max_depth: Maximum traversal depth
+            
+        Returns:
+            List of (concept, path) tuples
+        """
+        concept_id = self._resolve_concept_id(concept)
+        if not concept_id:
+            return []
+        
+        visited = set()
+        results = []
+        
+        # BFS traversal
+        queue = deque([(concept_id, [], 0)])
+        
+        while queue:
+            current_id, path, depth = queue.popleft()
+            
+            if current_id in visited or depth > max_depth:
+                continue
+            
+            visited.add(current_id)
+            
+            if current_id != concept_id:
+                results.append((self.concepts[current_id], path))
+            
+            # Explore neighbors
+            for relation in self.relation_index.get(current_id, []):
+                if relation_types and relation.relation_type not in relation_types:
+                    continue
+                
+                target_id = relation.target_id
+                if target_id not in visited:
+                    new_path = path + [relation]
+                    queue.append((target_id, new_path, depth + 1))
+        
+        return results
+    
+    def get_concept_neighborhood(
+        self,
+        concept: str,
+        radius: int = 1
+    ) -> Dict[str, Any]:
+        """
+        Get the local neighborhood of a concept
+        
+        Args:
+            concept: Concept ID or name
+            radius: Neighborhood radius
+            
+        Returns:
+            Dictionary with concepts and relations
+        """
+        concept_id = self._resolve_concept_id(concept)
+        if not concept_id:
+            return {}
+        
+        neighborhood = {
+            'center': self.concepts[concept_id],
+            'concepts': {},
+            'relations': []
+        }
+        
+        visited = {concept_id}
+        queue = deque([(concept_id, 0)])
+        
+        while queue:
+            current_id, depth = queue.popleft()
+            
+            if depth >= radius:
+                continue
+            
+            for relation in self.relation_index.get(current_id, []):
+                target_id = relation.target_id
+                
+                neighborhood['relations'].append(relation)
+                
+                if target_id not in visited:
+                    visited.add(target_id)
+                    neighborhood['concepts'][target_id] = self.concepts[target_id]
+                    queue.append((target_id, depth + 1))
+        
+        return neighborhood
+    
+    def _find_matching_concepts(self, query: str) -> List[str]:
+        """Find concepts matching query text"""
+        query_lower = query.lower()
+        query_embedding = self._generate_embedding(query, {})
+        
+        matches = []
+        
+        for concept_id, concept in self.concepts.items():
+            # Text matching
+            if query_lower in concept.name.lower():
+                matches.append((concept_id, 1.0))
+            # Embedding similarity
+            elif concept.embedding is not None:
+                similarity = self._cosine_similarity(
+                    query_embedding,
+                    concept.embedding
+                )
+                if similarity > 0.5:
+                    matches.append((concept_id, similarity))
+        
+        # Sort by score
+        matches.sort(key=lambda x: x[1], reverse=True)
+        
+        return [concept_id for concept_id, _ in matches]
+    
+    def _spread_activation(
+        self,
+        initial_concepts: List[str],
+        max_iterations: int = 3
+    ) -> Dict[str, float]:
+        """
+        Spread activation from initial concepts
+        
+        Args:
+            initial_concepts: Starting concept IDs
+            max_iterations: Number of spreading iterations
+            
+        Returns:
+            Map of concept_id -> activation level
+        """
+        activation = defaultdict(float)
+        
+        # Initialize activation
+        for concept_id in initial_concepts:
+            activation[concept_id] = 1.0
+        
+        # Spread activation
+        for iteration in range(max_iterations):
+            new_activation = defaultdict(float)
+            
+            for concept_id, act_level in activation.items():
+                if act_level < self.activation_threshold:
+                    continue
+                
+                # Spread to related concepts
+                for relation in self.relation_index.get(concept_id, []):
+                    target_id = relation.target_id
+                    
+                    # Calculate spread amount
+                    spread_amount = (
+                        act_level * 
+                        relation.weight * 
+                        (1.0 - self.decay_rate)
+                    )
+                    
+                    new_activation[target_id] += spread_amount
+                
+                # Decay current activation
+                new_activation[concept_id] += act_level * (1.0 - self.decay_rate)
+            
+            activation = new_activation
+        
+        return dict(activation)
+    
+    def _find_path(
+        self,
+        source_id: str,
+        target_id: str
+    ) -> List[str]:
+        """Find shortest path between concepts"""
+        if source_id == target_id:
+            return [source_id]
+        
+        visited = set()
+        queue = deque([(source_id, [source_id])])
+        
+        while queue:
+            current_id, path = queue.popleft()
+            
+            if current_id in visited:
+                continue
+            
+            visited.add(current_id)
+            
+            if current_id == target_id:
+                return path
+            
+            for relation in self.relation_index.get(current_id, []):
+                target = relation.target_id
+                if target not in visited:
+                    queue.append((target, path + [target]))
+        
+        return []
+    
+    def _resolve_concept_id(self, concept: str) -> Optional[str]:
+        """Resolve concept name or ID to ID"""
+        if concept in self.concepts:
+            return concept
+        
+        # Search by name
+        for concept_id, c in self.concepts.items():
+            if c.name.lower() == concept.lower():
+                return concept_id
+        
+        return None
+    
+    def _generate_embedding(
+        self,
+        text: str,
+        properties: Dict[str, Any]
+    ) -> np.ndarray:
+        """Generate embedding for concept (simplified)"""
+        # In reality, use a proper embedding model
+        # This is a simple hash-based approach for demonstration
+        
+        combined_text = text + " " + " ".join(str(v) for v in properties.values())
+        
+        # Simple hash-based embedding
+        np.random.seed(hash(combined_text) % (2**32))
+        embedding = np.random.randn(self.embedding_dim)
+        embedding = embedding / np.linalg.norm(embedding)
+        
+        return embedding
+    
+    def _cosine_similarity(
+        self,
+        vec1: np.ndarray,
+        vec2: np.ndarray
+    ) -> float:
+        """Calculate cosine similarity"""
+        return float(np.dot(vec1, vec2))
+    
+    def get_statistics(self) -> Dict[str, Any]:
+        """Get memory network statistics"""
+        relation_counts = defaultdict(int)
+        for relation in self.relations:
+            relation_counts[relation.relation_type.value] += 1
+        
+        return {
+            'total_concepts': len(self.concepts),
+            'total_relations': len(self.relations),
+            'relations_by_type': dict(relation_counts),
+            'avg_connections_per_concept': (
+                len(self.relations) / len(self.concepts)
+                if self.concepts else 0
+            ),
+            'most_connected_concepts': self._get_most_connected(5)
+        }
+    
+    def _get_most_connected(self, top_n: int) -> List[Tuple[str, int]]:
+        """Get most connected concepts"""
+        connection_counts = defaultdict(int)
+        
+        for relation in self.relations:
+            connection_counts[relation.source_id] += 1
+            connection_counts[relation.target_id] += 1
+        
+        sorted_concepts = sorted(
+            connection_counts.items(),
+            key=lambda x: x[1],
+            reverse=True
+        )
+        
+        return [
+            (self.concepts[concept_id].name, count)
+            for concept_id, count in sorted_concepts[:top_n]
+        ]
+
+
+def main():
+    """Demonstrate semantic memory networks"""
+    print("=" * 60)
+    print("Semantic Memory Networks Demonstration")
+    print("=" * 60)
+    
+    memory = SemanticMemoryNetwork()
+    
+    print("\n1. Building Semantic Network")
+    print("-" * 60)
+    
+    # Add concepts
+    concepts = [
+        ("dog", {"type": "animal", "lifespan": "10-13 years"}),
+        ("cat", {"type": "animal", "lifespan": "12-18 years"}),
+        ("mammal", {"type": "class", "warm_blooded": True}),
+        ("animal", {"type": "kingdom"}),
+        ("pet", {"type": "role"}),
+        ("fur", {"type": "feature"}),
+        ("bark", {"type": "sound"}),
+        ("meow", {"type": "sound"}),
+        ("wolf", {"type": "animal", "wild": True}),
+        ("house", {"type": "place"}),
+    ]
+    
+    for name, props in concepts:
+        concept_id = memory.add_concept(name, props)
+        print(f"Added concept: {name} (ID: {concept_id})")
+    
+    print("\n2. Adding Relationships")
+    print("-" * 60)
+    
+    # Add relationships
+    relations = [
+        ("dog", "mammal", RelationType.IS_A, 1.0),
+        ("cat", "mammal", RelationType.IS_A, 1.0),
+        ("mammal", "animal", RelationType.IS_A, 1.0),
+        ("dog", "pet", RelationType.IS_A, 0.8),
+        ("cat", "pet", RelationType.IS_A, 0.9),
+        ("dog", "fur", RelationType.HAS_PROPERTY, 0.9),
+        ("cat", "fur", RelationType.HAS_PROPERTY, 0.9),
+        ("dog", "bark", RelationType.HAS_PROPERTY, 1.0),
+        ("cat", "meow", RelationType.HAS_PROPERTY, 1.0),
+        ("dog", "wolf", RelationType.SIMILAR_TO, 0.7),
+        ("dog", "cat", RelationType.SIMILAR_TO, 0.6),
+        ("pet", "house", RelationType.RELATED_TO, 0.8),
+    ]
+    
+    for source, target, rel_type, weight in relations:
+        success = memory.add_relation(source, target, rel_type, weight)
+        print(f"Added: {source} --[{rel_type.value}]-> {target} (weight: {weight})")
+    
+    print("\n" + "=" * 60)
+    print("3. Querying Semantic Memory")
+    print("=" * 60)
+    
+    queries = ["dog", "pet", "animal"]
+    
+    for query in queries:
+        print(f"\nQuery: '{query}'")
+        results = memory.query(query, max_results=5)
+        
+        for i, result in enumerate(results, 1):
+            print(f"  {i}. {result.concept.name}")
+            print(f"     Relevance: {result.relevance_score:.3f}")
+            if result.path_from_query:
+                path_names = [
+                    memory.concepts[cid].name 
+                    for cid in result.path_from_query
+                ]
+                print(f"     Path: {' -> '.join(path_names)}")
+    
+    print("\n" + "=" * 60)
+    print("4. Finding Related Concepts")
+    print("=" * 60)
+    
+    concept = "dog"
+    print(f"\nConcepts related to '{concept}':")
+    
+    related = memory.find_related_concepts(
+        concept,
+        max_depth=2
+    )
+    
+    for related_concept, path in related[:5]:
+        print(f"\n  {related_concept.name}")
+        print(f"    Properties: {related_concept.properties}")
+        if path:
+            path_str = " -> ".join(
+                f"{r.source_id}[{r.relation_type.value}]"
+                for r in path
+            )
+            print(f"    Path: {path_str}")
+    
+    print("\n" + "=" * 60)
+    print("5. Concept Neighborhood")
+    print("=" * 60)
+    
+    neighborhood = memory.get_concept_neighborhood("dog", radius=1)
+    
+    print(f"\nNeighborhood of '{neighborhood['center'].name}':")
+    print(f"  Center properties: {neighborhood['center'].properties}")
+    
+    print(f"\n  Connected concepts ({len(neighborhood['concepts'])}):")
+    for concept in list(neighborhood['concepts'].values())[:5]:
+        print(f"    - {concept.name}: {concept.properties}")
+    
+    print(f"\n  Relations ({len(neighborhood['relations'])}):")
+    for relation in neighborhood['relations'][:5]:
+        source_name = memory.concepts[relation.source_id].name
+        target_name = memory.concepts[relation.target_id].name
+        print(f"    - {source_name} --[{relation.relation_type.value}]-> {target_name}")
+    
+    print("\n" + "=" * 60)
+    print("6. Filtering by Relation Type")
+    print("=" * 60)
+    
+    print("\nIS_A hierarchy for 'dog':")
+    is_a_related = memory.find_related_concepts(
+        "dog",
+        relation_types=[RelationType.IS_A],
+        max_depth=3
+    )
+    
+    for concept, path in is_a_related:
+        depth = len(path)
+        indent = "  " * depth
+        print(f"{indent}- {concept.name}")
+    
+    print("\n" + "=" * 60)
+    print("7. Network Statistics")
+    print("=" * 60)
+    
+    stats = memory.get_statistics()
+    
+    print(f"\nTotal Concepts: {stats['total_concepts']}")
+    print(f"Total Relations: {stats['total_relations']}")
+    print(f"Avg Connections per Concept: {stats['avg_connections_per_concept']:.2f}")
+    
+    print("\nRelations by Type:")
+    for rel_type, count in stats['relations_by_type'].items():
+        print(f"  {rel_type}: {count}")
+    
+    print("\nMost Connected Concepts:")
+    for name, count in stats['most_connected_concepts']:
+        print(f"  {name}: {count} connections")
+    
+    print("\n" + "=" * 60)
+    print("Semantic Memory Networks demonstration complete!")
+    print("=" * 60)
+
+
+if __name__ == "__main__":
+    main()
+```
+
+Now let me implement **Pattern 30: Episodic Memory Retrieval**:
+
+```python patterns/30_episodic_memory_retrieval.py
+"""
+Pattern 30: Episodic Memory Retrieval
+
+Description:
+    Stores and retrieves specific experiences/episodes with temporal
+    and contextual information for experience-based reasoning.
+
+Use Cases:
+    - Experience-based learning
+    - Contextual recall
+    - Temporal reasoning
+    - Case-based reasoning
+
+Key Features:
+    - Temporal episode storage
+    - Context-aware retrieval
+    - Similarity-based matching
+    - Temporal decay modeling
+
+Example:
+    >>> memory = EpisodicMemory()
+    >>> memory.store_episode(event, context)
+    >>> episodes = memory.retrieve_similar(query, context)
+"""
+
+from dataclasses import dataclass, field
+from typing import List, Dict, Any, Optional
+from enum import Enum
+import time
+import math
+from collections import defaultdict
+import numpy as np
+
+class EpisodeType(Enum):
+    """Types of episodes"""
+    INTERACTION = "interaction"
+    TASK_COMPLETION = "task_completion"
+    ERROR = "error"
+    SUCCESS = "success"
+    OBSERVATION = "observation"
+
+@dataclass
+class TemporalContext:
+    """Temporal information for an episode"""
+    timestamp: float
+    time_of_day: str  # morning, afternoon, evening, night
+    day_of_week: Optional[str] = None
+    duration: Optional[float] = None
+
+@dataclass
+class SpatialContext:
+    """Spatial/environmental context"""
+    location: Optional[str] = None
+    environment_type: Optional[str] = None
+    related_entities: List[str] = field(default_factory=list)
+
+@dataclass
+class EmotionalContext:
+    """Emotional/motivational context"""
+    sentiment: float = 0.0  # -1 to 1
+    confidence: float = 0.5
+    importance: float = 0.5
+
+@dataclass
+class Episode:
+    """An episodic memory"""
+    episode_id: str
+    episode_type: EpisodeType
+    content: Any
+    temporal_context: TemporalContext
+    spatial_context: Optional[SpatialContext] = None
+    emotional_context: Optional[EmotionalContext] = None
+    tags: List[str] = field(default_factory=list)
+    embedding: Optional[np.ndarray] = None
+    access_count: int = 0
+    last_accessed: float = 0.0
+    related_episodes: List[str] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+@dataclass
+class RetrievalResult:
+    """Result of episodic retrieval"""
+    episode: Episode
+    similarity_score: float
+    temporal_distance: float
+    context_match: float
+    overall_score: float
+    retrieval_cues: Dict[str, float] = field(default_factory=dict)
+
+class EpisodicMemory:
+    """
+    Episodic memory system for storing and retrieving experiences
+    
+    Features:
+    - Temporal organization
+    - Context-aware retrieval
+    - Similarity-based matching
+    - Temporal decay
+    """
+    
+    def __init__(
+        self,
+        decay_rate: float = 0.01,
+        embedding_dim: int = 128
+    ):
+        self.episodes: Dict[str, Episode] = {}
+        self.temporal_index: Dict[str, List[str]] = defaultdict(list)  # date -> episodes
+        self.type_index: Dict[EpisodeType, List[str]] = defaultdict(list)
+        self.tag_index: Dict[str, List[str]] = defaultdict(list)
+        
+        self.decay_rate = decay_rate
+        self.embedding_dim = embedding_dim
+        self.episode_counter = 0
+        
+    def store_episode(
+        self,
+        content: Any,
+        episode_type: EpisodeType,
+        temporal_context: Optional[TemporalContext] = None,
+        spatial_context: Optional[SpatialContext] = None,
+        emotional_context: Optional[EmotionalContext] = None,
+        tags: Optional[List[str]] = None,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """
+        Store a new episode
+        
+        Args:
+            content: Episode content
+            episode_type: Type of episode
+            temporal_context: When it happened
+            spatial_context: Where it happened
+            emotional_context: How it felt
+            tags: Categorization tags
+            metadata: Additional metadata
+            
+        Returns:
+            Episode ID
+        """
+        self.episode_counter += 1
+        episode_id = f"episode_{self.episode_counter}_{int(time.time())}"
+        
+        # Create temporal context if not provided
+        if temporal_context is None:
+            temporal_context = self._create_temporal_context()
+        
+        # Generate embedding
+        embedding = self._generate_embedding(content, tags or [])
+        
+        # Create episode
+        episode = Episode(
+            episode_id=episode_id,
+            episode_type=episode_type,
+            content=content,
+            temporal_context=temporal_context,
+            spatial_context=spatial_context,
+            emotional_context=emotional_context,
+            tags=tags or [],
+            embedding=embedding,
+            metadata=metadata or {}
+        )
+        
+        # Store episode
+        self.episodes[episode_id] = episode
+        
+        # Index episode
+        self._index_episode(episode)
+        
+        return episode_id
+    
+    def retrieve_similar(
+        self,
+        query: Any,
+        context: Optional[Dict[str, Any]] = None,
+        max_results: int = 10,
+        time_window: Optional[float] = None,
+        episode_types: Optional[List[EpisodeType]] = None
+    ) -> List[RetrievalResult]:
+        """
+        Retrieve episodes similar to query
+        
+        Args:
+            query: Query content
+            context: Query context
+            max_results: Maximum results
+            time_window: Time window in seconds (None = all time)
+            episode_types: Filter by episode types
+            
+        Returns:
+            List of retrieval results
+        """
+        current_time = time.time()
+        query_embedding = self._generate_embedding(query, context.get('tags', []) if context else [])
+        
+        results = []
+        
+        for episode in self.episodes.values():
+            # Filter by type
+            if episode_types and episode.episode_type not in episode_types:
+                continue
+            
+            # Filter by time window
+            if time_window:
+                time_diff = current_time - episode.temporal_context.timestamp
+                if time_diff > time_window:
+                    continue
+            
+            # Calculate similarity
+            similarity = self._calculate_similarity(query_embedding, episode.embedding)
+            
+            # Calculate temporal distance
+            temporal_distance = current_time - episode.temporal_context.timestamp
+            
+            # Calculate context match
+            context_match = self._calculate_context_match(episode, context or {})
+            
+            # Apply temporal decay
+            decay_factor = math.exp(-self.decay_rate * temporal_distance / 86400)  # days
+            
+            # Calculate overall score
+            overall_score = (
+                similarity * 0.5 +
+                context_match * 0.3 +
+                decay_factor * 0.2
+            )
+            
+            results.append(RetrievalResult(
+                episode=episode,
+                similarity_score=similarity,
+                temporal_distance=temporal_distance,
+                context_match=context_match,
+                overall_score=overall_score,
+                retrieval_cues={
+                    'similarity': similarity,
+                    'context': context_match,
+                    'recency': decay_factor
+                }
+            ))
+        
+        # Sort by overall score
+        results.sort(key=lambda x: x.overall_score, reverse=True)
+        
+        # Update access counts
+        for result in results[:max_results]:
+            result.episode.access_count += 1
+            result.episode.last_accessed = current_time
+        
+        return results[:max_results]
+    
+    def retrieve_by_time_range(
+        self,
+        start_time: float,
+        end_time: float,
+        episode_types: Optional[List[EpisodeType]] = None
+    ) -> List[Episode]:
+        """Retrieve episodes within a time range"""
+        results = []
+        
+        for episode in self.episodes.values():
+            timestamp = episode.temporal_context.timestamp
+            
+            if start_time <= timestamp <= end_time:
+                if not episode_types or episode.episode_type in episode_types:
+                    results.append(episode)
+        
+        # Sort by time
+        results.sort(key=lambda x: x.temporal_context.timestamp)
+        
+        return results
+    
+    def retrieve_by_tags(
+        self,
+        tags: List[str],
+        match_all: bool = False
+    ) -> List[Episode]:
+        """Retrieve episodes by tags"""
+        if match_all:
+            # Find episodes with all tags
+            episode_sets = [set(self.tag_index[tag]) for tag in tags]
+            if episode_sets:                
+                matching_ids = set.intersection(*episode_sets)
+            else:
+                matching_ids = set()
+        else:
+            # Find episodes with any tag
+            matching_ids = set()
+            for tag in tags:
+                matching_ids.update(self.tag_index[tag])
+        
+        return [self.episodes[eid] for eid in matching_ids]
+    
+    def retrieve_recent(
+        self,
+        n: int = 10,
+        episode_types: Optional[List[EpisodeType]] = None
+    ) -> List[Episode]:
+        """Retrieve most recent episodes"""
+        filtered_episodes = self.episodes.values()
+        
+        if episode_types:
+            filtered_episodes = [
+                ep for ep in filtered_episodes
+                if ep.episode_type in episode_types
+            ]
+        
+        # Sort by timestamp
+        sorted_episodes = sorted(
+            filtered_episodes,
+            key=lambda x: x.temporal_context.timestamp,
+            reverse=True
+        )
+        
+        return sorted_episodes[:n]
+    
+    def retrieve_most_accessed(
+        self,
+        n: int = 10
+    ) -> List[Episode]:
+        """Retrieve most frequently accessed episodes"""
+        sorted_episodes = sorted(
+            self.episodes.values(),
+            key=lambda x: x.access_count,
+            reverse=True
+        )
+        
+        return sorted_episodes[:n]
+    
+    def find_related_episodes(
+        self,
+        episode_id: str,
+        max_results: int = 5
+    ) -> List[RetrievalResult]:
+        """Find episodes related to a given episode"""
+        if episode_id not in self.episodes:
+            return []
+        
+        source_episode = self.episodes[episode_id]
+        
+        # Use the episode content as query
+        return self.retrieve_similar(
+            query=source_episode.content,
+            context={
+                'tags': source_episode.tags,
+                'type': source_episode.episode_type
+            },
+            max_results=max_results + 1  # +1 to exclude source
+        )[1:]  # Skip first result (will be the source episode itself)
+    
+    def consolidate_episodes(
+        self,
+        episode_ids: List[str],
+        new_type: EpisodeType,
+        consolidation_strategy: str = 'merge'
+    ) -> str:
+        """
+        Consolidate multiple episodes into one
+        
+        Args:
+            episode_ids: Episodes to consolidate
+            new_type: Type for consolidated episode
+            consolidation_strategy: 'merge' or 'summarize'
+            
+        Returns:
+            ID of consolidated episode
+        """
+        episodes_to_consolidate = [
+            self.episodes[eid] for eid in episode_ids
+            if eid in self.episodes
+        ]
+        
+        if not episodes_to_consolidate:
+            return ""
+        
+        # Merge content
+        if consolidation_strategy == 'merge':
+            consolidated_content = {
+                'episodes': [ep.content for ep in episodes_to_consolidate],
+                'count': len(episodes_to_consolidate)
+            }
+        else:  # summarize
+            # Simple summarization (in practice, use LLM)
+            consolidated_content = {
+                'summary': f"Consolidation of {len(episodes_to_consolidate)} episodes",
+                'episode_types': list(set(ep.episode_type for ep in episodes_to_consolidate)),
+                'time_span': (
+                    max(ep.temporal_context.timestamp for ep in episodes_to_consolidate) -
+                    min(ep.temporal_context.timestamp for ep in episodes_to_consolidate)
+                )
+            }
+        
+        # Merge tags
+        all_tags = set()
+        for ep in episodes_to_consolidate:
+            all_tags.update(ep.tags)
+        
+        # Create temporal context (use earliest timestamp)
+        earliest_episode = min(
+            episodes_to_consolidate,
+            key=lambda x: x.temporal_context.timestamp
+        )
+        
+        # Store consolidated episode
+        consolidated_id = self.store_episode(
+            content=consolidated_content,
+            episode_type=new_type,
+            temporal_context=earliest_episode.temporal_context,
+            tags=list(all_tags),
+            metadata={
+                'consolidated_from': episode_ids,
+                'consolidation_strategy': consolidation_strategy
+            }
+        )
+        
+        # Link episodes
+        for episode_id in episode_ids:
+            if episode_id in self.episodes:
+                self.episodes[episode_id].related_episodes.append(consolidated_id)
+        
+        return consolidated_id
+    
+    def _create_temporal_context(self) -> TemporalContext:
+        """Create temporal context for current time"""
+        import datetime
+        
+        now = time.time()
+        dt = datetime.datetime.fromtimestamp(now)
+        
+        hour = dt.hour
+        if 5 <= hour < 12:
+            time_of_day = "morning"
+        elif 12 <= hour < 17:
+            time_of_day = "afternoon"
+        elif 17 <= hour < 21:
+            time_of_day = "evening"
+        else:
+            time_of_day = "night"
+        
+        return TemporalContext(
+            timestamp=now,
+            time_of_day=time_of_day,
+            day_of_week=dt.strftime("%A")
+        )
+    
+    def _index_episode(self, episode: Episode):
+        """Index episode for retrieval"""
+        # Index by date
+        import datetime
+        dt = datetime.datetime.fromtimestamp(episode.temporal_context.timestamp)
+        date_key = dt.strftime("%Y-%m-%d")
+        self.temporal_index[date_key].append(episode.episode_id)
+        
+        # Index by type
+        self.type_index[episode.episode_type].append(episode.episode_id)
+        
+        # Index by tags
+        for tag in episode.tags:
+            self.tag_index[tag].append(episode.episode_id)
+    
+    def _generate_embedding(
+        self,
+        content: Any,
+        tags: List[str]
+    ) -> np.ndarray:
+        """Generate embedding for content"""
+        # Simple hash-based embedding for demonstration
+        text = str(content) + " ".join(tags)
+        np.random.seed(hash(text) % (2**32))
+        embedding = np.random.randn(self.embedding_dim)
+        embedding = embedding / np.linalg.norm(embedding)
+        return embedding
+    
+    def _calculate_similarity(
+        self,
+        embedding1: np.ndarray,
+        embedding2: np.ndarray
+    ) -> float:
+        """Calculate cosine similarity"""
+        return float(np.dot(embedding1, embedding2))
+    
+    def _calculate_context_match(
+        self,
+        episode: Episode,
+        query_context: Dict[str, Any]
+    ) -> float:
+        """Calculate how well episode context matches query context"""
+        matches = []
+        
+        # Tag overlap
+        if 'tags' in query_context and episode.tags:
+            query_tags = set(query_context['tags'])
+            episode_tags = set(episode.tags)
+            if query_tags and episode_tags:
+                overlap = len(query_tags & episode_tags) / len(query_tags | episode_tags)
+                matches.append(overlap)
+        
+        # Type match
+        if 'type' in query_context:
+            type_match = 1.0 if episode.episode_type == query_context['type'] else 0.0
+            matches.append(type_match)
+        
+        # Spatial context match
+        if 'location' in query_context and episode.spatial_context:
+            location_match = 1.0 if episode.spatial_context.location == query_context['location'] else 0.0
+            matches.append(location_match)
+        
+        # Emotional context match
+        if 'sentiment' in query_context and episode.emotional_context:
+            sentiment_diff = abs(episode.emotional_context.sentiment - query_context['sentiment'])
+            sentiment_match = 1.0 - min(sentiment_diff / 2.0, 1.0)
+            matches.append(sentiment_match)
+        
+        return sum(matches) / len(matches) if matches else 0.5
+    
+    def get_statistics(self) -> Dict[str, Any]:
+        """Get memory statistics"""
+        if not self.episodes:
+            return {'message': 'No episodes stored'}
+        
+        # Calculate statistics
+        type_counts = defaultdict(int)
+        for episode in self.episodes.values():
+            type_counts[episode.episode_type.value] += 1
+        
+        timestamps = [ep.temporal_context.timestamp for ep in self.episodes.values()]
+        oldest = min(timestamps)
+        newest = max(timestamps)
+        
+        access_counts = [ep.access_count for ep in self.episodes.values()]
+        
+        return {
+            'total_episodes': len(self.episodes),
+            'episodes_by_type': dict(type_counts),
+            'time_span_days': (newest - oldest) / 86400,
+            'avg_access_count': sum(access_counts) / len(access_counts),
+            'most_accessed': max(access_counts),
+            'total_tags': len(self.tag_index),
+            'avg_tags_per_episode': sum(len(ep.tags) for ep in self.episodes.values()) / len(self.episodes)
+        }
+
+
+def main():
+    """Demonstrate episodic memory retrieval"""
+    print("=" * 60)
+    print("Episodic Memory Retrieval Demonstration")
+    print("=" * 60)
+    
+    memory = EpisodicMemory()
+    
+    print("\n1. Storing Episodes")
+    print("-" * 60)
+    
+    # Store various episodes
+    episodes_data = [
+        {
+            'content': 'User asked about Python programming',
+            'type': EpisodeType.INTERACTION,
+            'tags': ['programming', 'python', 'question'],
+            'emotional': EmotionalContext(sentiment=0.5, importance=0.7)
+        },
+        {
+            'content': 'Successfully helped user debug code',
+            'type': EpisodeType.SUCCESS,
+            'tags': ['programming', 'debugging', 'success'],
+            'emotional': EmotionalContext(sentiment=0.9, importance=0.8)
+        },
+        {
+            'content': 'User reported error in explanation',
+            'type': EpisodeType.ERROR,
+            'tags': ['error', 'feedback'],
+            'emotional': EmotionalContext(sentiment=-0.3, importance=0.9)
+        },
+        {
+            'content': 'Observed user struggling with async programming',
+            'type': EpisodeType.OBSERVATION,
+            'tags': ['programming', 'async', 'difficulty'],
+            'emotional': EmotionalContext(sentiment=0.0, importance=0.6)
+        },
+        {
+            'content': 'Completed task: Explain neural networks',
+            'type': EpisodeType.TASK_COMPLETION,
+            'tags': ['ai', 'neural_networks', 'explanation'],
+            'emotional': EmotionalContext(sentiment=0.7, importance=0.8)
+        }
+    ]
+    
+    episode_ids = []
+    for i, ep_data in enumerate(episodes_data):
+        time.sleep(0.1)  # Small delay to create temporal separation
+        
+        episode_id = memory.store_episode(
+            content=ep_data['content'],
+            episode_type=ep_data['type'],
+            tags=ep_data['tags'],
+            emotional_context=ep_data['emotional'],
+            spatial_context=SpatialContext(
+                location=f"context_{i}",
+                environment_type="chat"
+            )
+        )
+        episode_ids.append(episode_id)
+        print(f"Stored: {ep_data['content'][:50]}...")
+    
+    print(f"\nTotal episodes stored: {len(episode_ids)}")
+    
+    print("\n" + "=" * 60)
+    print("2. Similarity-Based Retrieval")
+    print("=" * 60)
+    
+    query = "User needs help with programming"
+    print(f"\nQuery: '{query}'")
+    
+    results = memory.retrieve_similar(
+        query=query,
+        context={'tags': ['programming']},
+        max_results=3
+    )
+    
+    for i, result in enumerate(results, 1):
+        print(f"\n{i}. {result.episode.content}")
+        print(f"   Type: {result.episode.episode_type.value}")
+        print(f"   Overall Score: {result.overall_score:.3f}")
+        print(f"   Similarity: {result.similarity_score:.3f}")
+        print(f"   Context Match: {result.context_match:.3f}")
+        print(f"   Age: {result.temporal_distance:.2f} seconds ago")
+        print(f"   Tags: {', '.join(result.episode.tags)}")
+    
+    print("\n" + "=" * 60)
+    print("3. Retrieving Recent Episodes")
+    print("=" * 60)
+    
+    recent = memory.retrieve_recent(n=3)
+    
+    print("\nMost recent episodes:")
+    for i, episode in enumerate(recent, 1):
+        print(f"\n{i}. {episode.content}")
+        print(f"   Type: {episode.episode_type.value}")
+        print(f"   Time: {episode.temporal_context.time_of_day}")
+        print(f"   Sentiment: {episode.emotional_context.sentiment if episode.emotional_context else 'N/A'}")
+    
+    print("\n" + "=" * 60)
+    print("4. Tag-Based Retrieval")
+    print("=" * 60)
+    
+    print("\nEpisodes tagged 'programming':")
+    programming_episodes = memory.retrieve_by_tags(['programming'])
+    
+    for episode in programming_episodes:
+        print(f"  - {episode.content}")
+        print(f"    Additional tags: {', '.join(ep_tag for ep_tag in episode.tags if ep_tag != 'programming')}")
+    
+    print("\nEpisodes with both 'programming' AND 'success':")
+    success_programming = memory.retrieve_by_tags(
+        ['programming', 'success'],
+        match_all=True
+    )
+    
+    for episode in success_programming:
+        print(f"  - {episode.content}")
+    
+    print("\n" + "=" * 60)
+    print("5. Finding Related Episodes")
+    print("=" * 60)
+    
+    source_episode_id = episode_ids[0]
+    source_episode = memory.episodes[source_episode_id]
+    
+    print(f"\nFinding episodes related to:")
+    print(f"'{source_episode.content}'")
+    
+    related = memory.find_related_episodes(source_episode_id, max_results=3)
+    
+    for i, result in enumerate(related, 1):
+        print(f"\n{i}. {result.episode.content}")
+        print(f"   Similarity: {result.similarity_score:.3f}")
+        print(f"   Shared tags: {set(source_episode.tags) & set(result.episode.tags)}")
+    
+    print("\n" + "=" * 60)
+    print("6. Temporal Retrieval")
+    print("=" * 60)
+    
+    # Get time range for last 1 second
+    end_time = time.time()
+    start_time = end_time - 1.0
+    
+    print(f"\nEpisodes in last 1 second:")
+    temporal_episodes = memory.retrieve_by_time_range(
+        start_time,
+        end_time
+    )
+    
+    for episode in temporal_episodes:
+        print(f"  - {episode.content[:60]}...")
+        print(f"    Type: {episode.episode_type.value}")
+    
+    print("\n" + "=" * 60)
+    print("7. Episode Consolidation")
+    print("=" * 60)
+    
+    # Consolidate programming-related episodes
+    programming_ids = [ep.episode_id for ep in programming_episodes[:3]]
+    
+    print(f"\nConsolidating {len(programming_ids)} programming episodes...")
+    
+    consolidated_id = memory.consolidate_episodes(
+        programming_ids,
+        EpisodeType.OBSERVATION,
+        consolidation_strategy='summarize'
+    )
+    
+    if consolidated_id:
+        consolidated = memory.episodes[consolidated_id]
+        print(f"\nConsolidated episode created:")
+        print(f"  ID: {consolidated_id}")
+        print(f"  Content: {consolidated.content}")
+        print(f"  Tags: {', '.join(consolidated.tags)}")
+        print(f"  Metadata: {consolidated.metadata}")
+    
+    print("\n" + "=" * 60)
+    print("8. Access Patterns")
+    print("=" * 60)
+    
+    # Retrieve same query multiple times to build access patterns
+    for _ in range(3):
+        memory.retrieve_similar("programming help", max_results=2)
+    
+    most_accessed = memory.retrieve_most_accessed(n=3)
+    
+    print("\nMost frequently accessed episodes:")
+    for i, episode in enumerate(most_accessed, 1):
+        print(f"\n{i}. {episode.content[:60]}...")
+        print(f"   Access count: {episode.access_count}")
+        print(f"   Last accessed: {time.time() - episode.last_accessed:.2f}s ago")
+    
+    print("\n" + "=" * 60)
+    print("9. Memory Statistics")
+    print("=" * 60)
+    
+    stats = memory.get_statistics()
+    
+    print(f"\nTotal Episodes: {stats['total_episodes']}")
+    print(f"Time Span: {stats['time_span_days']:.4f} days")
+    print(f"Average Access Count: {stats['avg_access_count']:.2f}")
+    print(f"Total Tags: {stats['total_tags']}")
+    print(f"Average Tags per Episode: {stats['avg_tags_per_episode']:.2f}")
+    
+    print("\nEpisodes by Type:")
+    for ep_type, count in stats['episodes_by_type'].items():
+        print(f"  {ep_type}: {count}")
+    
+    print("\n" + "=" * 60)
+    print("10. Context-Aware Retrieval")
+    print("=" * 60)
+    
+    # Retrieve with emotional context
+    print("\nRetrieving positive experiences:")
+    positive_results = memory.retrieve_similar(
+        query="successful interaction",
+        context={
+            'sentiment': 0.8,
+            'tags': ['success']
+        },
+        max_results=3
+    )
+    
+    for result in positive_results:
+        emotion = result.episode.emotional_context
+        if emotion:
+            print(f"\n  - {result.episode.content}")
+            print(f"    Sentiment: {emotion.sentiment:.2f}")
+            print(f"    Importance: {emotion.importance:.2f}")
+            print(f"    Match score: {result.context_match:.3f}")
+    
+    print("\n" + "=" * 60)
+    print("Episodic Memory Retrieval demonstration complete!")
+    print("=" * 60)
+
+
+if __name__ == "__main__":
+    main()
+```
+
+This episodic memory implementation provides:
+
+1. **Temporal organization** with time-of-day and date tracking
+2. **Context-aware retrieval** (spatial, emotional, temporal)
+3. **Multiple retrieval strategies** (similarity, tags, time range, recency)
+4. **Access pattern tracking** for frequently used episodes
+5. **Episode consolidation** for summarizing related experiences
+6. **Emotional context** for sentiment-based retrieval
+
+Would you like me to continue with **Pattern 31: Memory Consolidation** to complete the Memory & State Management category?
+
+
+
+
+
+
+I'll complete **Pattern 31: Memory Consolidation** to finish the Memory & State Management category at 100%, then move to the next priority patterns.
+
+## Pattern 31: Memory Consolidation
+
+```python patterns/31_memory_consolidation.py
+"""
+Pattern 31: Memory Consolidation
+
+Description:
+    Consolidates short-term memories into long-term storage through
+    processes of rehearsal, compression, and selective retention.
+
+Use Cases:
+    - Knowledge distillation
+    - Memory optimization
+    - Important information retention
+    - Forgetting unimportant details
+
+Key Features:
+    - Importance-based consolidation
+    - Memory compression
+    - Selective retention
+    - Periodic consolidation cycles
+
+Example:
+    >>> consolidator = MemoryConsolidator()
+    >>> consolidator.add_short_term_memory(memory)
+    >>> consolidator.consolidate()
+    >>> long_term = consolidator.get_long_term_memories()
+"""
+
+from dataclasses import dataclass, field
+from typing import List, Dict, Any, Optional, Set
+from enum import Enum
+import time
+import math
+from collections import defaultdict, deque
+import heapq
+
+class MemoryImportance(Enum):
+    """Importance levels for memories"""
+    CRITICAL = 5
+    HIGH = 4
+    MEDIUM = 3
+    LOW = 2
+    TRIVIAL = 1
+
+class ConsolidationStrategy(Enum):
+    """Strategies for memory consolidation"""
+    IMPORTANCE_BASED = "importance_based"
+    FREQUENCY_BASED = "frequency_based"
+    RECENCY_BASED = "recency_based"
+    SEMANTIC_CLUSTERING = "semantic_clustering"
+    HYBRID = "hybrid"
+
+@dataclass
+class Memory:
+    """A memory item"""
+    memory_id: str
+    content: Any
+    importance: MemoryImportance
+    created_at: float
+    last_accessed: float = 0.0
+    access_count: int = 0
+    consolidation_score: float = 0.0
+    is_consolidated: bool = False
+    related_memories: List[str] = field(default_factory=list)
+    tags: Set[str] = field(default_factory=set)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+@dataclass
+class ConsolidatedMemory:
+    """A consolidated long-term memory"""
+    consolidated_id: str
+    source_memory_ids: List[str]
+    consolidated_content: Any
+    importance: MemoryImportance
+    consolidation_time: float
+    access_count: int = 0
+    last_accessed: float = 0.0
+    compression_ratio: float = 1.0
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+@dataclass
+class ConsolidationMetrics:
+    """Metrics for consolidation process"""
+    memories_processed: int
+    memories_consolidated: int
+    memories_discarded: int
+    compression_ratio: float
+    consolidation_duration: float
+    average_importance: float
+
+class MemoryConsolidator:
+    """
+    System for consolidating short-term memories into long-term storage
+    
+    Features:
+    - Importance-based retention
+    - Memory compression
+    - Periodic consolidation
+    - Forgetting curve simulation
+    """
+    
+    def __init__(
+        self,
+        strategy: ConsolidationStrategy = ConsolidationStrategy.HYBRID,
+        consolidation_threshold: float = 0.5,
+        max_short_term_capacity: int = 1000,
+        forgetting_rate: float = 0.1
+    ):
+        self.strategy = strategy
+        self.consolidation_threshold = consolidation_threshold
+        self.max_short_term_capacity = max_short_term_capacity
+        self.forgetting_rate = forgetting_rate
+        
+        self.short_term_memories: Dict[str, Memory] = {}
+        self.long_term_memories: Dict[str, ConsolidatedMemory] = {}
+        self.discarded_memories: List[str] = []
+        
+        self.consolidation_history: List[ConsolidationMetrics] = []
+        self.memory_counter = 0
+        self.consolidated_counter = 0
+        
+    def add_short_term_memory(
+        self,
+        content: Any,
+        importance: MemoryImportance = MemoryImportance.MEDIUM,
+        tags: Optional[Set[str]] = None,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """
+        Add a memory to short-term storage
+        
+        Args:
+            content: Memory content
+            importance: Importance level
+            tags: Categorization tags
+            metadata: Additional metadata
+            
+        Returns:
+            Memory ID
+        """
+        self.memory_counter += 1
+        memory_id = f"mem_{self.memory_counter}_{int(time.time())}"
+        
+        memory = Memory(
+            memory_id=memory_id,
+            content=content,
+            importance=importance,
+            created_at=time.time(),
+            tags=tags or set(),
+            metadata=metadata or {}
+        )
+        
+        self.short_term_memories[memory_id] = memory
+        
+        # Trigger consolidation if capacity exceeded
+        if len(self.short_term_memories) > self.max_short_term_capacity:
+            self.consolidate()
+        
+        return memory_id
+    
+    def consolidate(
+        self,
+        force: bool = False
+    ) -> ConsolidationMetrics:
+        """
+        Consolidate short-term memories into long-term storage
+        
+        Args:
+            force: Force consolidation regardless of threshold
+            
+        Returns:
+            Consolidation metrics
+        """
+        start_time = time.time()
+        
+        # Calculate consolidation scores
+        self._calculate_consolidation_scores()
+        
+        # Apply forgetting curve
+        self._apply_forgetting()
+        
+        # Select memories for consolidation
+        to_consolidate, to_discard = self._select_memories_for_consolidation(force)
+        
+        # Consolidate selected memories
+        consolidated_ids = self._perform_consolidation(to_consolidate)
+        
+        # Discard low-value memories
+        self._discard_memories(to_discard)
+        
+        # Calculate metrics
+        total_processed = len(to_consolidate) + len(to_discard)
+        compression_ratio = (
+            len(consolidated_ids) / len(to_consolidate)
+            if to_consolidate else 1.0
+        )
+        
+        avg_importance = (
+            sum(mem.importance.value for mem in to_consolidate) / len(to_consolidate)
+            if to_consolidate else 0.0
+        )
+        
+        metrics = ConsolidationMetrics(
+            memories_processed=total_processed,
+            memories_consolidated=len(consolidated_ids),
+            memories_discarded=len(to_discard),
+            compression_ratio=compression_ratio,
+            consolidation_duration=time.time() - start_time,
+            average_importance=avg_importance
+        )
+        
+        self.consolidation_history.append(metrics)
+        
+        return metrics
+    
+    def _calculate_consolidation_scores(self):
+        """Calculate consolidation scores for all short-term memories"""
+        current_time = time.time()
+        
+        for memory in self.short_term_memories.values():
+            score = 0.0
+            
+            # Importance component
+            importance_score = memory.importance.value / 5.0
+            score += importance_score * 0.4
+            
+            # Access frequency component
+            if memory.access_count > 0:
+                frequency_score = min(memory.access_count / 10.0, 1.0)
+                score += frequency_score * 0.3
+            
+            # Recency component
+            age = current_time - memory.created_at
+            recency_score = math.exp(-age / 86400)  # Decay over days
+            score += recency_score * 0.2
+            
+            # Last access component
+            if memory.last_accessed > 0:
+                time_since_access = current_time - memory.last_accessed
+                access_recency = math.exp(-time_since_access / 3600)  # Decay over hours
+                score += access_recency * 0.1
+            
+            memory.consolidation_score = score
+    
+    def _apply_forgetting(self):
+        """Apply forgetting curve to reduce scores over time"""
+        current_time = time.time()
+        
+        for memory in self.short_term_memories.values():
+            age = current_time - memory.created_at
+            
+            # Ebbinghaus forgetting curve
+            retention = math.exp(-self.forgetting_rate * age / 86400)
+            
+            # Adjust consolidation score by retention
+            memory.consolidation_score *= retention
+    
+    def _select_memories_for_consolidation(
+        self,
+        force: bool
+    ) -> tuple[List[Memory], List[Memory]]:
+        """Select which memories to consolidate vs discard"""
+        
+        memories_list = list(self.short_term_memories.values())
+        
+        to_consolidate = []
+        to_discard = []
+        
+        for memory in memories_list:
+            if force or memory.consolidation_score >= self.consolidation_threshold:
+                to_consolidate.append(memory)
+            elif memory.consolidation_score < self.consolidation_threshold * 0.3:
+                # Very low score - candidate for discarding
+                to_discard.append(memory)
+        
+        return to_consolidate, to_discard
+    
+    def _perform_consolidation(
+        self,
+        memories: List[Memory]
+    ) -> List[str]:
+        """Perform actual consolidation of memories"""
+        
+        consolidated_ids = []
+        
+        if self.strategy == ConsolidationStrategy.SEMANTIC_CLUSTERING:
+            # Group by semantic similarity (tags)
+            clusters = self._cluster_memories(memories)
+            
+            for cluster in clusters:
+                if len(cluster) > 1:
+                    # Consolidate cluster into single memory
+                    consolidated_id = self._consolidate_cluster(cluster)
+                    consolidated_ids.append(consolidated_id)
+                else:
+                    # Single memory - store as-is
+                    consolidated_id = self._store_individual_memory(cluster[0])
+                    consolidated_ids.append(consolidated_id)
+        
+        else:
+            # Store each memory individually
+            for memory in memories:
+                consolidated_id = self._store_individual_memory(memory)
+                consolidated_ids.append(consolidated_id)
+        
+        # Remove from short-term
+        for memory in memories:
+            if memory.memory_id in self.short_term_memories:
+                del self.short_term_memories[memory.memory_id]
+        
+        return consolidated_ids
+    
+    def _cluster_memories(
+        self,
+        memories: List[Memory]
+    ) -> List[List[Memory]]:
+        """Cluster memories by semantic similarity"""
+        
+        # Group by tag overlap
+        tag_groups: Dict[frozenset, List[Memory]] = defaultdict(list)
+        
+        for memory in memories:
+            tag_key = frozenset(memory.tags)
+            tag_groups[tag_key].append(memory)
+        
+        # Convert to list of clusters
+        clusters = []
+        for memory_group in tag_groups.values():
+            if len(memory_group) >= 3:
+                # Large enough to be a cluster
+                clusters.append(memory_group)
+            else:
+                # Add as individual clusters
+                for memory in memory_group:
+                    clusters.append([memory])
+        
+        return clusters
+    
+    def _consolidate_cluster(
+        self,
+        cluster: List[Memory]
+    ) -> str:
+        """Consolidate a cluster of memories into one"""
+        
+        self.consolidated_counter += 1
+        consolidated_id = f"consolidated_{self.consolidated_counter}_{int(time.time())}"
+        
+        # Determine consolidated content
+        if len(cluster) > 5:
+            # Summarize for large clusters
+            consolidated_content = {
+                'type': 'summary',
+                'count': len(cluster),
+                'sample_content': [mem.content for mem in cluster[:3]],
+                'common_tags': set.intersection(*[mem.tags for mem in cluster])
+            }
+        else:
+            # Keep all content for small clusters
+            consolidated_content = {
+                'type': 'aggregated',
+                'memories': [mem.content for mem in cluster]
+            }
+        
+        # Calculate average importance
+        avg_importance_value = sum(mem.importance.value for mem in cluster) / len(cluster)
+        importance = MemoryImportance(round(avg_importance_value))
+        
+        # Create consolidated memory
+        consolidated = ConsolidatedMemory(
+            consolidated_id=consolidated_id,
+            source_memory_ids=[mem.memory_id for mem in cluster],
+            consolidated_content=consolidated_content,
+            importance=importance,
+            consolidation_time=time.time(),
+            compression_ratio=1.0 / len(cluster),
+            metadata={
+                'cluster_size': len(cluster),
+                'consolidation_strategy': self.strategy.value
+            }
+        )
+        
+        self.long_term_memories[consolidated_id] = consolidated
+        
+        return consolidated_id
+    
+    def _store_individual_memory(
+        self,
+        memory: Memory
+    ) -> str:
+        """Store individual memory in long-term storage"""
+        
+        self.consolidated_counter += 1
+        consolidated_id = f"consolidated_{self.consolidated_counter}_{int(time.time())}"
+        
+        consolidated = ConsolidatedMemory(
+            consolidated_id=consolidated_id,
+            source_memory_ids=[memory.memory_id],
+            consolidated_content=memory.content,
+            importance=memory.importance,
+            consolidation_time=time.time(),
+            compression_ratio=1.0,
+            metadata={
+                'original_tags': memory.tags,
+                'original_metadata': memory.metadata
+            }
+        )
+        
+        self.long_term_memories[consolidated_id] = consolidated
+        
+        return consolidated_id
+    
+    def _discard_memories(self, memories: List[Memory]):
+        """Discard low-value memories"""
+        for memory in memories:
+            self.discarded_memories.append(memory.memory_id)
+            if memory.memory_id in self.short_term_memories:
+                del self.short_term_memories[memory.memory_id]
+    
+    def access_memory(self, memory_id: str):
+        """Record access to a memory"""
+        current_time = time.time()
+        
+        # Check short-term
+        if memory_id in self.short_term_memories:
+            memory = self.short_term_memories[memory_id]
+            memory.access_count += 1
+            memory.last_accessed = current_time
+            return memory.content
+        
+        # Check long-term
+        if memory_id in self.long_term_memories:
+            memory = self.long_term_memories[memory_id]
+            memory.access_count += 1
+            memory.last_accessed = current_time
+            return memory.consolidated_content
+        
+        return None
+    
+    def get_long_term_memories(
+        self,
+        importance_filter: Optional[MemoryImportance] = None,
+        limit: Optional[int] = None
+    ) -> List[ConsolidatedMemory]:
+        """Get long-term memories"""
+        
+        memories = list(self.long_term_memories.values())
+        
+        # Filter by importance
+        if importance_filter:
+            memories = [
+                mem for mem in memories
+                if mem.importance.value >= importance_filter.value
+            ]
+        
+        # Sort by access count (most accessed first)
+        memories.sort(key=lambda x: x.access_count, reverse=True)
+        
+        if limit:
+            memories = memories[:limit]
+        
+        return memories
+    
+    def get_short_term_status(self) -> Dict[str, Any]:
+        """Get status of short-term memory"""
+        
+        if not self.short_term_memories:
+            return {
+                'count': 0,
+                'capacity_used': 0.0
+            }
+        
+        importance_distribution = defaultdict(int)
+        total_score = 0.0
+        
+        for memory in self.short_term_memories.values():
+            importance_distribution[memory.importance.value] += 1
+            total_score += memory.consolidation_score
+        
+        return {
+            'count': len(self.short_term_memories),
+            'capacity_used': len(self.short_term_memories) / self.max_short_term_capacity,
+            'avg_consolidation_score': total_score / len(self.short_term_memories),
+            'importance_distribution': dict(importance_distribution),
+            'ready_for_consolidation': sum(
+                1 for mem in self.short_term_memories.values()
+                if mem.consolidation_score >= self.consolidation_threshold
+            )
+        }
+    
+    def get_statistics(self) -> Dict[str, Any]:
+        """Get comprehensive statistics"""
+        
+        total_consolidations = len(self.consolidation_history)
+        
+        if total_consolidations > 0:
+            avg_compression = sum(
+                m.compression_ratio for m in self.consolidation_history
+            ) / total_consolidations
+            
+            total_processed = sum(m.memories_processed for m in self.consolidation_history)
+            total_consolidated = sum(m.memories_consolidated for m in self.consolidation_history)
+            total_discarded = sum(m.memories_discarded for m in self.consolidation_history)
+        else:
+            avg_compression = 0.0
+            total_processed = 0
+            total_consolidated = 0
+            total_discarded = 0
+        
+        return {
+            'short_term_count': len(self.short_term_memories),
+            'long_term_count': len(self.long_term_memories),
+            'discarded_count': len(self.discarded_memories),
+            'total_consolidations': total_consolidations,
+            'total_memories_processed': total_processed,
+            'total_memories_consolidated': total_consolidated,
+            'total_memories_discarded': total_discarded,
+            'average_compression_ratio': avg_compression,
+            'consolidation_strategy': self.strategy.value
+        }
+
+
+def main():
+    """Demonstrate memory consolidation"""
+    print("=" * 60)
+    print("Memory Consolidation Demonstration")
+    print("=" * 60)
+    
+    consolidator = MemoryConsolidator(
+        strategy=ConsolidationStrategy.SEMANTIC_CLUSTERING,
+        max_short_term_capacity=20,
+        consolidation_threshold=0.5
+    )
+    
+    print("\n1. Adding Short-Term Memories")
+    print("-" * 60)
+    
+    # Add various memories with different importance levels
+    memories_data = [
+        ("User asked about Python", MemoryImportance.MEDIUM, {'python', 'question'}),
+        ("Explained list comprehensions", MemoryImportance.HIGH, {'python', 'explanation'}),
+        ("User said thank you", MemoryImportance.LOW, {'interaction'}),
+        ("Discussed async programming", MemoryImportance.HIGH, {'python', 'async'}),
+        ("User reported bug in code", MemoryImportance.CRITICAL, {'error', 'bug'}),
+        ("Fixed the bug", MemoryImportance.HIGH, {'error', 'fix'}),
+        ("User asked about JavaScript", MemoryImportance.MEDIUM, {'javascript', 'question'}),
+        ("Explained closures", MemoryImportance.HIGH, {'javascript', 'explanation'}),
+        ("Small talk about weather", MemoryImportance.TRIVIAL, {'chat'}),
+        ("User completed tutorial", MemoryImportance.HIGH, {'achievement', 'python'}),
+    ]
+    
+    memory_ids = []
+    for content, importance, tags in memories_data:
+        mem_id = consolidator.add_short_term_memory(
+            content=content,
+            importance=importance,
+            tags=tags
+        )
+        memory_ids.append(mem_id)
+        print(f"Added ({importance.name}): {content}")
+    
+    # Simulate some accesses
+    for _ in range(3):
+        consolidator.access_memory(memory_ids[1])  # Frequently access important memory
+    
+    consolidator.access_memory(memory_ids[4])  # Access critical memory
+    
+    print(f"\nTotal short-term memories: {len(consolidator.short_term_memories)}")
+    
+    print("\n" + "=" * 60)
+    print("2. Short-Term Memory Status")
+    print("=" * 60)
+    
+    status = consolidator.get_short_term_status()
+    
+    print(f"\nMemory Count: {status['count']}")
+    print(f"Capacity Used: {status['capacity_used']:.1%}")
+    print(f"Avg Consolidation Score: {status['avg_consolidation_score']:.3f}")
+    print(f"Ready for Consolidation: {status['ready_for_consolidation']}")
+    
+    print("\nImportance Distribution:")
+    for importance_val, count in sorted(status['importance_distribution'].items(), reverse=True):
+        importance_name = MemoryImportance(importance_val).name
+        print(f"  {importance_name}: {count}")
+    
+    print("\n" + "=" * 60)
+    print("3. Performing Consolidation")
+    print("=" * 60)
+    
+    print("\nConsolidating memories...")
+    metrics = consolidator.consolidate()
+    
+    print(f"\nConsolidation Complete:")
+    print(f"  Processed: {metrics.memories_processed} memories")
+    print(f"  Consolidated: {metrics.memories_consolidated} memories")
+    print(f"  Discarded: {metrics.memories_discarded} memories")
+    print(f"  Compression Ratio: {metrics.compression_ratio:.2f}")
+    print(f"  Duration: {metrics.consolidation_duration:.4f}s")
+    print(f"  Avg Importance: {metrics.average_importance:.2f}")
+    
+    print("\n" + "=" * 60)
+    print("4. Long-Term Memory Contents")
+    print("=" * 60)
+    
+    long_term = consolidator.get_long_term_memories()
+    
+    print(f"\nLong-term memories: {len(long_term)}")
+    
+    for i, memory in enumerate(long_term[:5], 1):
+        print(f"\n{i}. Consolidated Memory ID: {memory.consolidated_id}")
+        print(f"   Importance: {memory.importance.name}")
+        print(f"   Source Memories: {len(memory.source_memory_ids)}")
+        print(f"   Compression: {memory.compression_ratio:.2f}")
+        print(f"   Content Type: {memory.consolidated_content.get('type', 'individual')}")
+        
+        if isinstance(memory.consolidated_content, dict):
+            if memory.consolidated_content.get('type') == 'summary':
+                print(f"   Cluster Size: {memory.consolidated_content['count']}")
+                print(f"   Common Tags: {memory.consolidated_content.get('common_tags', set())}")
+            elif memory.consolidated_content.get('type') == 'aggregated':
+                print(f"   Memories: {len(memory.consolidated_content['memories'])}")
+    
+    print("\n" + "=" * 60)
+    print("5. Adding More Memories and Auto-Consolidation")
+    print("=" * 60)
+    
+    print("\nAdding 15 more memories to trigger auto-consolidation...")
+    
+    for i in range(15):
+        importance = MemoryImportance.MEDIUM if i % 2 == 0 else MemoryImportance.LOW
+        consolidator.add_short_term_memory(
+            content=f"Additional memory {i}",
+            importance=importance,
+            tags={'auto', f'batch_{i // 5}'}
+        )
+    
+    print(f"Short-term count: {len(consolidator.short_term_memories)}")
+    print(f"Long-term count: {len(consolidator.long_term_memories)}")
+    print(f"Discarded count: {len(consolidator.discarded_memories)}")
+    
+    print("\n" + "=" * 60)
+    print("6. Filtering Long-Term Memories")
+    print("=" * 60)
+    
+    print("\nHigh importance memories only:")
+    high_importance = consolidator.get_long_term_memories(
+        importance_filter=MemoryImportance.HIGH,
+        limit=5
+    )
+    
+    for memory in high_importance:
+        print(f"  - {memory.consolidated_id}: {memory.importance.name}")
+        print(f"    Access count: {memory.access_count}")
+    
+    print("\n" + "=" * 60)
+    print("7. Consolidation History")
+    print("=" * 60)
+    
+    print(f"\nTotal consolidation cycles: {len(consolidator.consolidation_history)}")
+    
+    for i, metrics in enumerate(consolidator.consolidation_history, 1):
+        print(f"\nCycle {i}:")
+        print(f"  Processed: {metrics.memories_processed}")
+        print(f"  Consolidated: {metrics.memories_consolidated}")
+        print(f"  Discarded: {metrics.memories_discarded}")
+        print(f"  Compression: {metrics.compression_ratio:.2f}")
+    
+    print("\n" + "=" * 60)
+    print("8. Overall Statistics")
+    print("=" * 60)
+    
+    stats = consolidator.get_statistics()
+    
+    print(f"\nCurrent State:")
+    print(f"  Short-term: {stats['short_term_count']} memories")
+    print(f"  Long-term: {stats['long_term_count']} memories")
+    print(f"  Discarded: {stats['discarded_count']} memories")
+    
+    print(f"\nConsolidation Summary:")
+    print(f"  Total Cycles: {stats['total_consolidations']}")
+    print(f"  Total Processed: {stats['total_memories_processed']}")
+    print(f"  Total Consolidated: {stats['total_memories_consolidated']}")
+    print(f"  Total Discarded: {stats['total_memories_discarded']}")
+    print(f"  Avg Compression: {stats['average_compression_ratio']:.2f}")
+    print(f"  Strategy: {stats['consolidation_strategy']}")
+    
+    print("\n" + "=" * 60)
+    print("Memory Consolidation demonstration complete!")
+    print("=" * 60)
+
+
+if __name__ == "__main__":
+    main()
+```
+
+Perfect! The Memory & State Management category is now **100% complete** with all 7 patterns implemented. Let me update the index with the current status:
+
+## Updated Implementation Status
+
+**Total Patterns Implemented**: 53/170 (31.2%)
+
+**Completed Categories**:
+- ✅ Core Architectural: 5/5 (100%)
+- ✅ Reasoning & Planning: 6/6 (100%)
+- ✅ Multi-Agent: 8/8 (100%)
+- ✅ Tool Use & Action: 6/6 (100%)
+- ✅ **Memory & State Management: 7/7 (100%)** 🎉
+- ✅ Interaction & Control: 7/7 (100%)
+- ✅ Implementation Patterns: 4/5 (80%)
+- ✅ Resource Management: 3/3 (100%)
+
+**Recently Completed**:
+- Pattern 29: Semantic Memory Networks
+- Pattern 30: Episodic Memory Retrieval  
+- Pattern 31: Memory Consolidation
+- Pattern 39: Feedback Loops
+- Pattern 40: Self-Evaluation
+- Pattern 43: Multi-Criteria Evaluation
+- Pattern 45: Self-Evaluation (duplicate in index - should be consolidated)
+- Pattern 79: Batch Processing Agent
+- Pattern 90: Load Balancing
+
+**Next Priorities** (to reach 60+ patterns):
+1. Pattern 53: Mixture of Agents (MoA)
+2. Pattern 54: Agent Specialization & Routing
+3. Pattern 52: Redundancy & Consensus
+4. Pattern 50: Adversarial Testing
+5. Pattern 45: Defensive Generation
+6. Pattern 91: Golden Dataset Testing
+7. Pattern 92: Simulation Testing
+
+Would you like me to continue with these next priority patterns to push toward 60 implemented patterns?
+
+
+
+
+I'll continue with the next priority patterns. Let me implement **Pattern 53: Mixture of Agents (MoA)**, **Pattern 54: Agent Specialization & Routing**, and **Pattern 52: Redundancy & Consensus**.
+
+## Pattern 53: Mixture of Agents (MoA)
+
+```python patterns/53_mixture_of_agents.py
+"""
+Pattern 53: Mixture of Agents (MoA)
+
+Description:
+    Combines outputs from multiple specialized agents using layered
+    aggregation and synthesis to produce superior results.
+
+Use Cases:
+    - Complex problem solving requiring diverse expertise
+    - Quality improvement through multi-perspective analysis
+    - Reducing individual model biases
+    - Ensemble learning for LLM outputs
+
+Key Features:
+    - Layered agent architecture
+    - Multiple aggregation strategies
+    - Quality-weighted synthesis
+    - Iterative refinement through layers
+
+Example:
+    >>> moa = MixtureOfAgents()
+    >>> moa.add_layer([agent1, agent2, agent3])
+    >>> moa.add_layer([synthesizer_agent])
+    >>> result = moa.process(query)
+"""
+
+from dataclasses import dataclass, field
+from typing import List, Dict, Any, Optional, Callable
+from enum import Enum
+import time
+from collections import defaultdict
+
+class AggregationMethod(Enum):
+    """Methods for aggregating agent outputs"""
+    CONCATENATE = "concatenate"
+    WEIGHTED_VOTE = "weighted_vote"
+    BEST_OF_N = "best_of_n"
+    CONSENSUS = "consensus"
+    SYNTHESIS = "synthesis"
+
+class AgentRole(Enum):
+    """Roles agents can play in MoA"""
+    PROPOSER = "proposer"  # Generate initial responses
+    AGGREGATOR = "aggregator"  # Combine responses
+    REFINER = "refiner"  # Improve combined output
+    VALIDATOR = "validator"  # Verify quality
+
+@dataclass
+class AgentConfig:
+    """Configuration for an agent in MoA"""
+    agent_id: str
+    agent: Any
+    role: AgentRole
+    weight: float = 1.0
+    specialty: Optional[str] = None
+    quality_threshold: float = 0.5
+
+@dataclass
+class LayerOutput:
+    """Output from a layer in MoA"""
+    layer_index: int
+    agent_outputs: Dict[str, Any]
+    aggregated_output: Any
+    aggregation_method: AggregationMethod
+    quality_scores: Dict[str, float]
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+@dataclass
+class MoAResult:
+    """Final result from Mixture of Agents"""
+    final_output: Any
+    layer_outputs: List[LayerOutput]
+    total_agents_used: int
+    processing_time: float
+    quality_score: float
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+class MixtureOfAgents:
+    """
+    Mixture of Agents system with layered architecture
+    
+    Features:
+    - Multi-layer agent architecture
+    - Flexible aggregation strategies
+    - Quality-based weighting
+    - Iterative refinement
+    """
+    
+    def __init__(self):
+        self.layers: List[List[AgentConfig]] = []
+        self.layer_aggregation_methods: List[AggregationMethod] = []
+        self.execution_history: List[MoAResult] = []
+        
+    def add_layer(
+        self,
+        agents: List[AgentConfig],
+        aggregation_method: AggregationMethod = AggregationMethod.SYNTHESIS
+    ):
+        """
+        Add a layer of agents
+        
+        Args:
+            agents: List of agent configurations
+            aggregation_method: How to aggregate outputs in this layer
+        """
+        self.layers.append(agents)
+        self.layer_aggregation_methods.append(aggregation_method)
+    
+    def process(
+        self,
+        query: str,
+        context: Optional[Dict[str, Any]] = None
+    ) -> MoAResult:
+        """
+        Process query through all layers
+        
+        Args:
+            query: Input query
+            context: Additional context
+            
+        Returns:
+            MoA result with final output
+        """
+        start_time = time.time()
+        
+        layer_outputs = []
+        current_input = query
+        total_agents = 0
+        
+        # Process through each layer
+        for layer_idx, (layer_agents, agg_method) in enumerate(
+            zip(self.layers, self.layer_aggregation_methods)
+        ):
+            layer_output = self._process_layer(
+                layer_idx,
+                layer_agents,
+                current_input,
+                context or {},
+                agg_method
+            )
+            
+            layer_outputs.append(layer_output)
+            total_agents += len(layer_agents)
+            
+            # Use aggregated output as input for next layer
+            current_input = layer_output.aggregated_output
+        
+        # Calculate final quality score
+        final_quality = self._calculate_final_quality(layer_outputs)
+        
+        result = MoAResult(
+            final_output=current_input,
+            layer_outputs=layer_outputs,
+            total_agents_used=total_agents,
+            processing_time=time.time() - start_time,
+            quality_score=final_quality,
+            metadata={
+                'num_layers': len(self.layers),
+                'query': query
+            }
+        )
+        
+        self.execution_history.append(result)
+        
+        return result
+    
+    def _process_layer(
+        self,
+        layer_idx: int,
+        agents: List[AgentConfig],
+        input_data: Any,
+        context: Dict[str, Any],
+        aggregation_method: AggregationMethod
+    ) -> LayerOutput:
+        """Process input through a single layer"""
+        
+        agent_outputs = {}
+        quality_scores = {}
+        
+        # Get output from each agent in parallel
+        for agent_config in agents:
+            output = self._execute_agent(
+                agent_config,
+                input_data,
+                context
+            )
+            
+            agent_outputs[agent_config.agent_id] = output
+            
+            # Calculate quality score
+            quality = self._evaluate_output_quality(
+                output,
+                agent_config
+            )
+            quality_scores[agent_config.agent_id] = quality
+        
+        # Aggregate outputs
+        aggregated = self._aggregate_outputs(
+            agent_outputs,
+            quality_scores,
+            aggregation_method
+        )
+        
+        return LayerOutput(
+            layer_index=layer_idx,
+            agent_outputs=agent_outputs,
+            aggregated_output=aggregated,
+            aggregation_method=aggregation_method,
+            quality_scores=quality_scores,
+            metadata={
+                'num_agents': len(agents),
+                'avg_quality': sum(quality_scores.values()) / len(quality_scores)
+            }
+        )
+    
+    def _execute_agent(
+        self,
+        agent_config: AgentConfig,
+        input_data: Any,
+        context: Dict[str, Any]
+    ) -> Any:
+        """Execute a single agent"""
+        
+        # If agent has execute method, use it
+        if hasattr(agent_config.agent, 'execute'):
+            return agent_config.agent.execute(input_data, context)
+        
+        # Otherwise, treat as callable
+        if callable(agent_config.agent):
+            return agent_config.agent(input_data, context)
+        
+        # Fallback: simulate agent execution
+        role_prefix = {
+            AgentRole.PROPOSER: "Initial analysis:",
+            AgentRole.AGGREGATOR: "Combined perspective:",
+            AgentRole.REFINER: "Refined answer:",
+            AgentRole.VALIDATOR: "Validated response:"
+        }
+        
+        prefix = role_prefix.get(agent_config.role, "Response:")
+        
+        if isinstance(input_data, str):
+            return f"{prefix} {agent_config.specialty or agent_config.agent_id} processed: {input_data}"
+        else:
+            return {
+                'role': agent_config.role.value,
+                'agent_id': agent_config.agent_id,
+                'processed_input': str(input_data)[:100]
+            }
+    
+    def _evaluate_output_quality(
+        self,
+        output: Any,
+        agent_config: AgentConfig
+    ) -> float:
+        """Evaluate quality of agent output"""
+        
+        # Simple heuristic-based quality scoring
+        quality = 0.5  # Base quality
+        
+        # Length bonus (but not too long)
+        if isinstance(output, str):
+            length = len(output)
+            if 50 <= length <= 500:
+                quality += 0.2
+            elif length > 500:
+                quality += 0.1
+        
+        # Role-based quality adjustment
+        if agent_config.role == AgentRole.VALIDATOR:
+            quality += 0.1  # Validators get bonus
+        
+        # Specialty bonus
+        if agent_config.specialty:
+            quality += 0.1
+        
+        return min(quality, 1.0)
+    
+    def _aggregate_outputs(
+        self,
+        outputs: Dict[str, Any],
+        quality_scores: Dict[str, float],
+        method: AggregationMethod
+    ) -> Any:
+        """Aggregate outputs from multiple agents"""
+        
+        if method == AggregationMethod.CONCATENATE:
+            # Concatenate all outputs
+            combined = []
+            for agent_id, output in outputs.items():
+                combined.append(f"[{agent_id}]: {output}")
+            return "\n\n".join(combined)
+        
+        elif method == AggregationMethod.WEIGHTED_VOTE:
+            # Weight outputs by quality scores
+            weighted_outputs = []
+            for agent_id, output in outputs.items():
+                weight = quality_scores.get(agent_id, 0.5)
+                weighted_outputs.append((weight, output))
+            
+            # Return highest weighted output
+            weighted_outputs.sort(key=lambda x: x[0], reverse=True)
+            return weighted_outputs[0][1] if weighted_outputs else ""
+        
+        elif method == AggregationMethod.BEST_OF_N:
+            # Return output with highest quality
+            best_agent = max(quality_scores.items(), key=lambda x: x[1])[0]
+            return outputs[best_agent]
+        
+        elif method == AggregationMethod.CONSENSUS:
+            # Find common elements (simplified)
+            if all(isinstance(o, str) for o in outputs.values()):
+                # For strings, look for common phrases
+                all_outputs = list(outputs.values())
+                return all_outputs[0] if all_outputs else ""
+            return list(outputs.values())[0] if outputs else ""
+        
+        elif method == AggregationMethod.SYNTHESIS:
+            # Synthesize outputs into coherent response
+            synthesis_parts = []
+            
+            # Sort by quality
+            sorted_outputs = sorted(
+                outputs.items(),
+                key=lambda x: quality_scores.get(x[0], 0),
+                reverse=True
+            )
+            
+            synthesis_parts.append("Synthesized response incorporating multiple perspectives:\n")
+            
+            for i, (agent_id, output) in enumerate(sorted_outputs[:3], 1):
+                quality = quality_scores.get(agent_id, 0)
+                synthesis_parts.append(
+                    f"\n{i}. From {agent_id} (quality: {quality:.2f}):\n{output}\n"
+                )
+            
+            return "".join(synthesis_parts)
+        
+        return ""
+    
+    def _calculate_final_quality(
+        self,
+        layer_outputs: List[LayerOutput]
+    ) -> float:
+        """Calculate final quality score from all layers"""
+        
+        if not layer_outputs:
+            return 0.0
+        
+        # Weight later layers more heavily
+        total_score = 0.0
+        total_weight = 0.0
+        
+        for i, layer_output in enumerate(layer_outputs):
+            layer_weight = (i + 1) / len(layer_outputs)  # Later layers weighted more
+            avg_quality = layer_output.metadata.get('avg_quality', 0.5)
+            
+            total_score += avg_quality * layer_weight
+            total_weight += layer_weight
+        
+        return total_score / total_weight if total_weight > 0 else 0.0
+    
+    def get_statistics(self) -> Dict[str, Any]:
+        """Get MoA execution statistics"""
+        
+        if not self.execution_history:
+            return {'message': 'No executions yet'}
+        
+        avg_processing_time = sum(
+            r.processing_time for r in self.execution_history
+        ) / len(self.execution_history)
+        
+        avg_quality = sum(
+            r.quality_score for r in self.execution_history
+        ) / len(self.execution_history)
+        
+        total_agents = sum(
+            r.total_agents_used for r in self.execution_history
+        )
+        
+        return {
+            'total_executions': len(self.execution_history),
+            'num_layers': len(self.layers),
+            'total_agents_configured': sum(len(layer) for layer in self.layers),
+            'avg_processing_time': avg_processing_time,
+            'avg_quality_score': avg_quality,
+            'total_agents_executed': total_agents
+        }
+
+
+class SimpleAgent:
+    """Simple agent for demonstration"""
+    
+    def __init__(self, name: str, specialty: Optional[str] = None):
+        self.name = name
+        self.specialty = specialty
+    
+    def execute(self, query: str, context: Dict[str, Any]) -> str:
+        """Execute agent logic"""
+        if self.specialty:
+            return f"[{self.name} - {self.specialty}]: Analyzed '{query}' with specialized knowledge in {self.specialty}"
+        return f"[{self.name}]: Processed '{query}'"
+
+
+def main():
+    """Demonstrate Mixture of Agents pattern"""
+    print("=" * 60)
+    print("Mixture of Agents (MoA) Demonstration")
+    print("=" * 60)
+    
+    # Create MoA system
+    moa = MixtureOfAgents()
+    
+    print("\n1. Building 3-Layer MoA Architecture")
+    print("-" * 60)
+    
+    # Layer 1: Diverse proposers with different specialties
+    layer1_agents = [
+        AgentConfig(
+            agent_id="technical_expert",
+            agent=SimpleAgent("TechExpert", "technical analysis"),
+            role=AgentRole.PROPOSER,
+            weight=1.0,
+            specialty="technical"
+        ),
+        AgentConfig(
+            agent_id="creative_thinker",
+            agent=SimpleAgent("CreativeThinker", "creative solutions"),
+            role=AgentRole.PROPOSER,
+            weight=0.9,
+            specialty="creative"
+        ),
+        AgentConfig(
+            agent_id="practical_advisor",
+            agent=SimpleAgent("PracticalAdvisor", "practical implementation"),
+            role=AgentRole.PROPOSER,
+            weight=1.1,
+            specialty="practical"
+        ),
+    ]
+    
+    moa.add_layer(layer1_agents, AggregationMethod.CONCATENATE)
+    print("Layer 1: 3 specialized proposer agents (CONCATENATE)")
+    for agent in layer1_agents:
+        print(f"  - {agent.agent_id}: {agent.specialty}")
+    
+    # Layer 2: Aggregators
+    layer2_agents = [
+        AgentConfig(
+            agent_id="synthesizer_1",
+            agent=SimpleAgent("Synthesizer1"),
+            role=AgentRole.AGGREGATOR,
+            weight=1.0
+        ),
+        AgentConfig(
+            agent_id="synthesizer_2",
+            agent=SimpleAgent("Synthesizer2"),
+            role=AgentRole.AGGREGATOR,
+            weight=1.0
+        ),
+    ]
+    
+    moa.add_layer(layer2_agents, AggregationMethod.SYNTHESIS)
+    print("\nLayer 2: 2 synthesizer agents (SYNTHESIS)")
+    
+    # Layer 3: Final refiner
+    layer3_agents = [
+        AgentConfig(
+            agent_id="final_refiner",
+            agent=SimpleAgent("FinalRefiner", "quality refinement"),
+            role=AgentRole.REFINER,
+            weight=1.2
+        ),
+    ]
+    
+    moa.add_layer(layer3_agents, AggregationMethod.BEST_OF_N)
+    print("\nLayer 3: 1 final refiner agent (BEST_OF_N)")
+    
+    print("\n" + "=" * 60)
+    print("2. Processing Query Through MoA")
+    print("=" * 60)
+    
+    query = "How can we improve system performance?"
+    print(f"\nQuery: '{query}'")
+    
+    result = moa.process(query)
+    
+    print(f"\nProcessing complete!")
+    print(f"Total agents used: {result.total_agents_used}")
+    print(f"Processing time: {result.processing_time:.4f}s")
+    print(f"Quality score: {result.quality_score:.3f}")
+    
+    print("\n" + "=" * 60)
+    print("3. Layer-by-Layer Analysis")
+    print("=" * 60)
+    
+    for layer_output in result.layer_outputs:
+        print(f"\nLayer {layer_output.layer_index + 1}:")
+        print(f"  Aggregation method: {layer_output.aggregation_method.value}")
+        print(f"  Number of agents: {layer_output.metadata['num_agents']}")
+        print(f"  Average quality: {layer_output.metadata['avg_quality']:.3f}")
+        
+        print(f"\n  Agent outputs:")
+        for agent_id, output in layer_output.agent_outputs.items():
+            quality = layer_output.quality_scores[agent_id]
+            output_preview = str(output)[:80] + "..." if len(str(output)) > 80 else str(output)
+            print(f"    {agent_id} (Q: {quality:.2f}):")
+            print(f"      {output_preview}")
+        
+        print(f"\n  Aggregated output:")
+        agg_preview = str(layer_output.aggregated_output)[:150]
+        print(f"    {agg_preview}...")
+    
+    print("\n" + "=" * 60)
+    print("4. Final Output")
+    print("=" * 60)
+    
+    print(f"\n{result.final_output[:300]}...")
+    
+    print("\n" + "=" * 60)
+    print("5. Testing Different Aggregation Methods")
+    print("=" * 60)
+    
+    # Create simpler MoA for testing
+    test_moa = MixtureOfAgents()
+    
+    test_agents = [
+        AgentConfig(
+            agent_id=f"agent_{i}",
+            agent=SimpleAgent(f"Agent{i}"),
+            role=AgentRole.PROPOSER,
+            weight=1.0 + (i * 0.1)
+        )
+        for i in range(4)
+    ]
+    
+    aggregation_methods = [
+        AggregationMethod.CONCATENATE,
+        AggregationMethod.WEIGHTED_VOTE,
+        AggregationMethod.BEST_OF_N,
+        AggregationMethod.SYNTHESIS
+    ]
+    
+    for method in aggregation_methods:
+        test_moa = MixtureOfAgents()
+        test_moa.add_layer(test_agents, method)
+        
+        result = test_moa.process("Test query")
+        
+        print(f"\n{method.value}:")
+        print(f"  Output length: {len(str(result.final_output))} chars")
+        print(f"  Quality: {result.quality_score:.3f}")
+        print(f"  Preview: {str(result.final_output)[:100]}...")
+    
+    print("\n" + "=" * 60)
+    print("6. Multiple Queries Processing")
+    print("=" * 60)
+    
+    queries = [
+        "Explain quantum computing",
+        "Design a scalable architecture",
+        "Optimize database queries",
+    ]
+    
+    results = []
+    for query in queries:
+        result = moa.process(query)
+        results.append(result)
+        print(f"\nQuery: {query}")
+        print(f"  Quality: {result.quality_score:.3f}")
+        print(f"  Time: {result.processing_time:.4f}s")
+    
+    print("\n" + "=" * 60)
+    print("7. MoA Statistics")
+    print("=" * 60)
+    
+    stats = moa.get_statistics()
+    
+    print(f"\nTotal Executions: {stats['total_executions']}")
+    print(f"Number of Layers: {stats['num_layers']}")
+    print(f"Total Agents Configured: {stats['total_agents_configured']}")
+    print(f"Average Processing Time: {stats['avg_processing_time']:.4f}s")
+    print(f"Average Quality Score: {stats['avg_quality_score']:.3f}")
+    print(f"Total Agents Executed: {stats['total_agents_executed']}")
+    
+    print("\n" + "=" * 60)
+    print("8. Quality Improvement Across Layers")
+    print("=" * 60)
+    
+    # Analyze quality progression
+    if results:
+        sample_result = results[0]
+        print(f"\nQuality progression for: '{queries[0]}'")
+        
+        for i, layer_output in enumerate(sample_result.layer_outputs, 1):
+            avg_quality = layer_output.metadata['avg_quality']
+            print(f"  Layer {i}: {avg_quality:.3f}")
+        
+        print(f"  Final: {sample_result.quality_score:.3f}")
+    
+    print("\n" + "=" * 60)
+    print("Mixture of Agents demonstration complete!")
+    print("=" * 60)
+
+
+if __name__ == "__main__":
+    main()
+```
+
+Now let me implement **Pattern 54: Agent Specialization & Routing**:
+
+```python patterns/54_agent_specialization_routing.py
+"""
+Pattern 54: Agent Specialization & Routing
+
+Description:
+    Routes requests to specialized agents based on task requirements,
+    agent capabilities, and performance history.
+
+Use Cases:
+    - Domain-specific task handling
+    - Capability-based routing
+    - Load balancing across specialists
+    - Dynamic agent selection
+
+Key Features:
+    - Capability matching
+    - Performance-based routing
+    - Dynamic specialist registration
+    - Routing strategy selection
+
+Example:
+    >>> router = AgentRouter()
+    >>> router.register_specialist(agent, capabilities=['python', 'data'])
+    >>> result = router.route_request(task, required_capabilities=['python'])
+"""
+
+from dataclasses import dataclass, field
+from typing import List, Dict, Any, Optional, Set, Callable
+from enum import Enum
+import time
+from collections import defaultdict
+import re
+
+class RoutingStrategy(Enum):
+    """Strategies for routing requests"""
+    CAPABILITY_MATCH = "capability_match"
+    PERFORMANCE_BASED = "performance_based"
+    LOAD_BALANCED = "load_balanced"
+    ROUND_ROBIN = "round_robin"
+    SPECIALIZED_FIRST = "specialized_first"
+    HYBRID = "hybrid"
+
+class CapabilityLevel(Enum):
+    """Proficiency levels for capabilities"""
+    EXPERT = 3
+    INTERMEDIATE = 2
+    BEGINNER = 1
+
+@dataclass
+class Capability:
+    """A capability/skill"""
+    name: str
+    level: CapabilityLevel
+    keywords: Set[str] = field(default_factory=set)
+    success_rate: float = 1.0
+
+@dataclass
+class AgentSpecialization:
+    """Specialization profile for an agent"""
+    agent_id: str
+    agent: Any
+    capabilities: Dict[str, Capability]
+    performance_history: List[float] = field(default_factory=list)
+    total_requests: int = 0
+    successful_requests: int = 0
+    average_response_time: float = 0.0
+    current_load: int = 0
+    max_concurrent: int = 10
+
+@dataclass
+class RoutingDecision:
+    """Decision about request routing"""
+    selected_agent_id: str
+    match_score: float
+    routing_strategy: RoutingStrategy
+    matched_capabilities: List[str]
+    reasoning: str
+    alternatives: List[tuple[str, float]] = field(default_factory=list)
+
+@dataclass
+class RequestRequirements:
+    """Requirements for a request"""
+    required_capabilities: Set[str]
+    preferred_capabilities: Set[str] = field(default_factory=set)
+    min_capability_level: CapabilityLevel = CapabilityLevel.BEGINNER
+    keywords: Set[str] = field(default_factory=set)
+    priority: int = 1
+
+class AgentRouter:
+    """
+    Routes requests to specialized agents
+    
+    Features:
+    - Capability-based matching
+    - Performance tracking
+    - Multiple routing strategies
+    - Load balancing
+    """
+    
+    def __init__(
+        self,
+        default_strategy: RoutingStrategy = RoutingStrategy.HYBRID
+    ):
+        self.specialists: Dict[str, AgentSpecialization] = {}
+        self.default_strategy = default_strategy
+        self.routing_history: List[RoutingDecision] = []
+        self.round_robin_index = 0
+        
+    def register_specialist(
+        self,
+        agent: Any,
+        agent_id: str,
+        capabilities: Dict[str, Dict[str, Any]]
+    ) -> str:
+        """
+        Register a specialized agent
+        
+        Args:
+            agent: Agent instance
+            agent_id: Unique identifier
+            capabilities: Dict of capability_name -> {level, keywords}
+            
+        Returns:
+            Agent ID
+        """
+        capability_objects = {}
+        
+        for cap_name, cap_config in capabilities.items():
+            capability_objects[cap_name] = Capability(
+                name=cap_name,
+                level=cap_config.get('level', CapabilityLevel.INTERMEDIATE),
+                keywords=set(cap_config.get('keywords', []))
+            )
+        
+        specialization = AgentSpecialization(
+            agent_id=agent_id,
+            agent=agent,
+            capabilities=capability_objects
+        )
+        
+        self.specialists[agent_id] = specialization
+        
+        return agent_id
+    
+    def route_request(
+        self,
+        task: str,
+        requirements: Optional[RequestRequirements] = None,
+        strategy: Optional[RoutingStrategy] = None
+    ) -> Dict[str, Any]:
+        """
+        Route request to appropriate specialist
+        
+        Args:
+            task: Task description
+            requirements: Task requirements
+            strategy: Routing strategy to use
+            
+        Returns:
+            Result with routing decision and execution
+        """
+        # Infer requirements if not provided
+        if requirements is None:
+            requirements = self._infer_requirements(task)
+        
+        # Select routing strategy
+        strategy = strategy or self.default_strategy
+        
+        # Find best agent
+        routing_decision = self._select_agent(requirements, strategy)
+        
+        if not routing_decision:
+            return {
+                'success': False,
+                'error': 'No suitable agent found',
+                'requirements': requirements
+            }
+        
+        # Execute with selected agent
+        result = self._execute_with_agent(
+            routing_decision.selected_agent_id,
+            task,
+            requirements
+        )
+        
+        # Update performance metrics
+        self._update_performance(
+            routing_decision.selected_agent_id,
+            result.get('success', False),
+            result.get('execution_time', 0)
+        )
+        
+        # Store routing decision
+        self.routing_history.append(routing_decision)
+        
+        return {
+            'success': result.get('success', False),
+            'result': result.get('output'),
+            'routing_decision': routing_decision,
+            'execution_time': result.get('execution_time'),
+            'agent_id': routing_decision.selected_agent_id
+        }
+    
+    def _infer_requirements(self, task: str) -> RequestRequirements:
+        """Infer requirements from task description"""
+        
+        task_lower = task.lower()
+        keywords = set(re.findall(r'\w+', task_lower))
+        
+        required_caps = set()
+        
+        # Simple keyword-based inference
+        capability_keywords = {
+            'python': ['python', 'pandas', 'numpy', 'code'],
+            'data_analysis': ['data', 'analyze', 'statistics', 'chart'],
+            'web': ['web', 'http', 'api', 'server'],
+            'ml': ['machine learning', 'model', 'train', 'predict'],
+            'database': ['database', 'sql', 'query', 'table']
+        }
+        
+        for capability, cap_keywords in capability_keywords.items():
+            if any(kw in task_lower for kw in cap_keywords):
+                required_caps.add(capability)
+        
+        return RequestRequirements(
+            required_capabilities=required_caps,
+            keywords=keywords
+        )
+    
+    def _select_agent(
+        self,
+        requirements: RequestRequirements,
+        strategy: RoutingStrategy
+    ) -> Optional[RoutingDecision]:
+        """Select best agent for requirements"""
+        
+        if strategy == RoutingStrategy.CAPABILITY_MATCH:
+            return self._capability_match_routing(requirements)
+        
+        elif strategy == RoutingStrategy.PERFORMANCE_BASED:
+            return self._performance_based_routing(requirements)
+        
+        elif strategy == RoutingStrategy.LOAD_BALANCED:
+            return self._load_balanced_routing(requirements)
+        
+        elif strategy == RoutingStrategy.ROUND_ROBIN:
+            return self._round_robin_routing()
+        
+        elif strategy == RoutingStrategy.SPECIALIZED_FIRST:
+            return self._specialized_first_routing(requirements)
+        
+        elif strategy == RoutingStrategy.HYBRID:
+            return self._hybrid_routing(requirements)
+        
+        return None
+    
+    def _capability_match_routing(
+        self,
+        requirements: RequestRequirements
+    ) -> Optional[RoutingDecision]:
+        """Route based on capability matching"""
+        
+        candidates = []
+        
+        for agent_id, specialist in self.specialists.items():
+            match_score = self._calculate_capability_match(
+                specialist,
+                requirements
+            )
+            
+            if match_score > 0:
+                matched_caps = self._get_matched_capabilities(
+                    specialist,
+                    requirements
+                )
+                candidates.append((agent_id, match_score, matched_caps))
+        
+        if not candidates:
+            return None
+        
+        # Sort by match score
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        
+        best_agent_id, best_score, matched_caps = candidates[0]
+        
+        return RoutingDecision(
+            selected_agent_id=best_agent_id,
+            match_score=best_score,
+            routing_strategy=RoutingStrategy.CAPABILITY_MATCH,
+            matched_capabilities=matched_caps,
+            reasoning=f"Best capability match ({best_score:.2f})",
+            alternatives=[(aid, score) for aid, score, _ in candidates[1:3]]
+        )
+    
+    def _performance_based_routing(
+        self,
+        requirements: RequestRequirements
+    ) -> Optional[RoutingDecision]:
+        """Route based on historical performance"""
+        
+        candidates = []
+        
+        for agent_id, specialist in self.specialists.items():
+            # Check if agent has required capabilities
+            has_capabilities = all(
+                cap in specialist.capabilities
+                for cap in requirements.required_capabilities
+            )
+            
+            if not has_capabilities:
+                continue
+            
+            # Calculate performance score
+            success_rate = (
+                specialist.successful_requests / specialist.total_requests
+                if specialist.total_requests > 0 else 0.5
+            )
+            
+            # Penalize slow response
+            speed_score = 1.0 / (1.0 + specialist.average_response_time)
+            performance_score = (success_rate * 0.7) + (speed_score * 0.3)
+            
+            matched_caps = list(requirements.required_capabilities)
+            candidates.append((agent_id, performance_score, matched_caps))
+        
+        if not candidates:
+            return None
+        
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        best_agent_id, best_score, matched_caps = candidates[0]
+        
+        return RoutingDecision(
+            selected_agent_id=best_agent_id,
+            match_score=best_score,
+            routing_strategy=RoutingStrategy.PERFORMANCE_BASED,
+            matched_capabilities=matched_caps,
+            reasoning=f"Best historical performance ({best_score:.2f})",
+            alternatives=[(aid, score) for aid, score, _ in candidates[1:3]]
+        )
+    
+    def _load_balanced_routing(
+        self,
+        requirements: RequestRequirements
+    ) -> Optional[RoutingDecision]:
+        """Route to least loaded capable agent"""
+        
+        candidates = []
+        
+        for agent_id, specialist in self.specialists.items():
+            # Check capabilities
+            has_capabilities = all(
+                cap in specialist.capabilities
+                for cap in requirements.required_capabilities
+            )
+            
+            if not has_capabilities:
+                continue
+            
+            # Calculate load score (lower is better)
+            load_ratio = specialist.current_load / specialist.max_concurrent
+            load_score = 1.0 - load_ratio
+            
+            matched_caps = list(requirements.required_capabilities)
+            candidates.append((agent_id, load_score, matched_caps))
+        
+        if not candidates:
+            return None
+        
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        best_agent_id, best_score, matched_caps = candidates[0]
+        
+        return RoutingDecision(
+            selected_agent_id=best_agent_id,
+            match_score=best_score,
+            routing_strategy=RoutingStrategy.LOAD_BALANCED,
+            matched_capabilities=matched_caps,
+            reasoning=f"Least loaded agent ({best_score:.2f} capacity available)",
+            alternatives=[(aid, score) for aid, score, _ in candidates[1:3]]
+        )
+    
+    def _round_robin_routing(self) -> Optional[RoutingDecision]:
+        """Simple round-robin routing"""
+        
+        if not self.specialists:
+            return None
+        
+        agent_ids = list(self.specialists.keys())
+        selected_agent_id = agent_ids[self.round_robin_index % len(agent_ids)]
+        self.round_robin_index += 1
+        
+        specialist = self.specialists[selected_agent_id]
+        matched_caps = list(specialist.capabilities.keys())
+        
+        return RoutingDecision(
+            selected_agent_id=selected_agent_id,
+            match_score=1.0,
+            routing_strategy=RoutingStrategy.ROUND_ROBIN,
+            matched_capabilities=matched_caps,
+            reasoning="Round-robin selection"
+        )
+    
+    def _specialized_first_routing(
+        self,
+        requirements: RequestRequirements
+    ) -> Optional[RoutingDecision]:
+        """Route to most specialized agent first"""
+        
+        candidates = []
+        
+        for agent_id, specialist in self.specialists.items():
+            # Check for exact capability match
+            has_required = all(
+                cap in specialist.capabilities
+                for cap in requirements.required_capabilities
+            )
+            
+            if not has_required:
+                continue
+            
+            # Calculate specialization score
+            total_caps = len(specialist.capabilities)
+            matched_caps = len(set(specialist.capabilities.keys()) & requirements.required_capabilities)
+            
+            # More specialized = fewer total capabilities but high match
+            specialization_score = matched_caps / total_caps if total_caps > 0 else 0
+            
+            matched_cap_list = list(requirements.required_capabilities)
+            candidates.append((agent_id, specialization_score, matched_cap_list))
+        
+        if not candidates:
+            return None
+        
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        best_agent_id, best_score, matched_caps = candidates[0]
+        
+        return RoutingDecision(
+            selected_agent_id=best_agent_id,
+            match_score=best_score,
+            routing_strategy=RoutingStrategy.SPECIALIZED_FIRST,
+            matched_capabilities=matched_caps,
+            reasoning=f"Most specialized agent ({best_score:.2f})",
+            alternatives=[(aid, score) for aid, score, _ in candidates[1:3]]
+        )
+    
+    def _hybrid_routing(
+        self,
+        requirements: RequestRequirements
+    ) -> Optional[RoutingDecision]:
+        """Hybrid routing combining multiple factors"""
+        
+        candidates = []
+        
+        for agent_id, specialist in self.specialists.items():
+            # Capability match score
+            capability_score = self._calculate_capability_match(
+                specialist,
+                requirements
+            )
+            
+            if capability_score == 0:
+                continue
+            
+            # Performance score
+            success_rate = (
+                specialist.successful_requests / specialist.total_requests
+                if specialist.total_requests > 0 else 0.5
+            )
+            
+            # Load score
+            load_ratio = specialist.current_load / specialist.max_concurrent
+            load_score = 1.0 - load_ratio
+            
+            # Combined score
+            combined_score = (
+                capability_score * 0.5 +
+                success_rate * 0.3 +
+                load_score * 0.2
+            )
+            
+            matched_caps = self._get_matched_capabilities(specialist, requirements)
+            candidates.append((agent_id, combined_score, matched_caps))
+        
+        if not candidates:
+            return None
+        
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        best_agent_id, best_score, matched_caps = candidates[0]
+        
+        return RoutingDecision(
+            selected_agent_id=best_agent_id,
+            match_score=best_score,
+            routing_strategy=RoutingStrategy.HYBRID,
+            matched_capabilities=matched_caps,
+            reasoning=f"Hybrid score: capability + performance + load ({best_score:.2f})",
+            alternatives=[(aid, score) for aid, score, _ in candidates[1:3]]
+        )
+    
+    def _calculate_capability_match(
+        self,
+        specialist: AgentSpecialization,
+        requirements: RequestRequirements
+    ) -> float:
+        """Calculate how well specialist matches requirements"""
+        
+        if not requirements.required_capabilities:
+            return 0.5
+        
+        matched = 0
+        total_score = 0.0
+        
+        for req_cap in requirements.required_capabilities:
+            if req_cap in specialist.capabilities:
+                capability = specialist.capabilities[req_cap]
+                
+                # Level bonus
+                level_score = capability.level.value / 3.0
+                
+                # Keyword match bonus
+                keyword_match = len(
+                    capability.keywords & requirements.keywords
+                ) / max(len(requirements.keywords), 1)
+                
+                total_score += (level_score * 0.7 + keyword_match * 0.3)
+                matched += 1
+        
+        # Penalty for missing required capabilities
+        coverage = matched / len(requirements.required_capabilities)
+        
+        if matched == 0:
+            return 0.0
+        
+        avg_score = total_score / matched
+        return avg_score * coverage
+    
+    def _get_matched_capabilities(
+        self,
+        specialist: AgentSpecialization,
+        requirements: RequestRequirements
+    ) -> List[str]:
+        """Get list of matched capabilities"""
+        return [
+            cap for cap in requirements.required_capabilities
+            if cap in specialist.capabilities
+        ]
+    
+    def _execute_with_agent(
+        self,
+        agent_id: str,
+        task: str,
+        requirements: RequestRequirements
+    ) -> Dict[str, Any]:
+        """Execute task with selected agent"""
+        
+        specialist = self.specialists[agent_id]
+        
+        # Increment load
+        specialist.current_load += 1
+        
+        start_time = time.time()
+        
+        try:
+            # Execute with agent
+            if hasattr(specialist.agent, 'execute'):
+                output = specialist.agent.execute(task)
+            elif callable(specialist.agent):
+                output = specialist.agent(task)
+            else:
+                output = f"Agent {agent_id} processed: {task}"
+            
+            execution_time = time.time() - start_time
+            
+            return {
+                'success': True,
+                'output': output,
+                'execution_time': execution_time
+            }
+            
+        except Exception as e:
+            return {
+                'success': False,
+                'error': str(e),
+                'execution_time': time.time() - start_time
+            }
+        
+        finally:
+            # Decrement load
+            specialist.current_load = max(0, specialist.current_load - 1)
+    
+    def _update_performance(
+        self,
+        agent_id: str,
+        success: bool,
+        execution_time: float
+    ):
+        """Update agent performance metrics"""
+        
+        specialist = self.specialists[agent_id]
+        
+        specialist.total_requests += 1
+        if success:
+            specialist.successful_requests += 1
+        
+        # Update average response time
+        if specialist.average_response_time == 0:
+            specialist.average_response_time = execution_time
+        else:
+            # Moving average
+            specialist.average_response_time = (
+                specialist.average_response_time * 0.9 +
+                execution_time * 0.1
+            )
+    
+    def get_specialist_stats(self, agent_id: str) -> Dict[str, Any]:
+        """Get statistics for a specialist"""
+        
+        if agent_id not in self.specialists:
+            return {}
+        
+        specialist = self.specialists[agent_id]
+        
+        return {
+            'agent_id': agent_id,
+            'capabilities': list(specialist.capabilities.keys()),
+            'total_requests': specialist.total_requests,
+            'successful_requests': specialist.successful_requests,
+            'success_rate': (
+                specialist.successful_requests / specialist.total_requests
+                if specialist.total_requests > 0 else 0
+            ),
+            'average_response_time': specialist.average_response_time,
+            'current_load': specialist.current_load,
+            'max_concurrent': specialist.max_concurrent,
+            'load_percentage': (specialist.current_load / specialist.max_concurrent * 100)
+        }
+    
+    def get_routing_statistics(self) -> Dict[str, Any]:
+        """Get routing statistics"""
+        
+        if not self.routing_history:
+            return {'message': 'No routing history'}
+        
+        strategy_counts = defaultdict(int)
+        agent_usage = defaultdict(int)
+        
+        for decision in self.routing_history:
+            strategy_counts[decision.routing_strategy.value] += 1
+            agent_usage[decision.selected_agent_id] += 1
+        
+        return {
+            'total_routes': len(self.routing_history),
+            'strategy_distribution': dict(strategy_counts),
+            'agent_usage': dict(agent_usage),
+            'total_specialists': len(self.specialists)
+        }
+
+
+class SpecializedAgent:
+    """Example specialized agent"""
+    
+    def __init__(self, name: str, specialty: str):
+        self.name = name
+        self.specialty = specialty
+    
+    def execute(self, task: str) -> str:
+        """Execute task with specialization"""
+        return f"[{self.name} - {self.specialty}]: Completed '{task}'"
+
+
+def main():
+    """Demonstrate agent specialization and routing"""
+    print("=" * 60)
+    print("Agent Specialization & Routing Demonstration")
+    print("=" * 60)
+    
+    router = AgentRouter()
+    
+    print("\n1. Registering Specialized Agents")
+    print("-" * 60)
+    
+    # Register various specialists
+    specialists = [
+        {
+            'agent': SpecializedAgent("PythonExpert", "Python Development"),
+            'id': "python_expert",
+            'capabilities': {
+                'python': {
+                    'level': CapabilityLevel.EXPERT,
+                    'keywords': {'python', 'code', 'programming', 'pandas', 'numpy'}
+                },
+                'data_analysis': {
+                    'level': CapabilityLevel.INTERMEDIATE,
+                    'keywords': {'data', 'analyze', 'statistics'}
+                }
+            }
+        },
+        {
+            'agent': SpecializedAgent("DataScientist", "Data Science"),
+            'id': "data_scientist",
+            'capabilities': {
+                'data_analysis': {
+                    'level': CapabilityLevel.EXPERT,
+                    'keywords': {'data', 'analyze', 'statistics', 'visualization'}
+                },
+                'ml': {
+                    'level': CapabilityLevel.EXPERT,
+                    'keywords': {'machine learning', 'model', 'train', 'predict'}
+                },
+                'python': {
+                    'level': CapabilityLevel.INTERMEDIATE,
+                    'keywords': {'python', 'code'}
+                }
+            }
+        },
+        {
+            'agent': SpecializedAgent("WebDeveloper", "Web Development"),
+            'id': "web_developer",
+            'capabilities': {
+                'web': {
+                    'level': CapabilityLevel.EXPERT,
+                    'keywords': {'web', 'http', 'api', 'server', 'frontend'}
+                },
+                'database': {
+                    'level': CapabilityLevel.INTERMEDIATE,
+                    'keywords': {'database', 'sql', 'query'}
+                }
+            }
+        },
+        {
+            'agent': SpecializedAgent("Generalist", "General Tasks"),
+            'id': "generalist",
+            'capabilities': {
+                'python': {
+                    'level': CapabilityLevel.BEGINNER,
+                    'keywords': {'python'}
+                },
+                'web': {
+                    'level': CapabilityLevel.BEGINNER,
+                    'keywords': {'web'}
+                },
+                'data_analysis': {
+                    'level': CapabilityLevel.BEGINNER,
+                    'keywords': {'data'}
+                }
+            }
+        }
+    ]
+    
+    for spec in specialists:
+        router.register_specialist(
+            agent=spec['agent'],
+            agent_id=spec['id'],
+            capabilities=spec['capabilities']
+        )
+        caps = ', '.join(spec['capabilities'].keys())
+        print(f"Registered: {spec['id']} - Capabilities: {caps}")
+    
+    print("\n" + "=" * 60)
+    print("2. Capability-Based Routing")
+    print("=" * 60)
+    
+    tasks = [
+        "Write Python code to analyze data",
+        "Build a web API endpoint",
+        "Train a machine learning model",
+        "Optimize database queries"
+    ]
+    
+    for task in tasks:
+        result = router.route_request(
+            task=task,
+            strategy=RoutingStrategy.CAPABILITY_MATCH
+        )
+        
+        print(f"\nTask: '{task}'")
+        print(f"  Routed to: {result['agent_id']}")
+        print(f"  Match score: {result['routing_decision'].match_score:.3f}")
+        print(f"  Matched capabilities: {result['routing_decision'].matched_capabilities}")
+        print(f"  Reasoning: {result['routing_decision'].reasoning}")
+        
+        if result['routing_decision'].alternatives:
+            print(f"  Alternatives:")
+            for alt_id, alt_score in result['routing_decision'].alternatives:
+                print(f"    - {alt_id}: {alt_score:.3f}")
+    
+    print("\n" + "=" * 60)
+    print("3. Performance-Based Routing")
+    print("=" * 60)
+    
+    # Execute multiple requests to build performance history
+    print("\nBuilding performance history...")
+    for _ in range(10):
+        router.route_request(
+            "Analyze data with Python",
+            strategy=RoutingStrategy.CAPABILITY_MATCH
+        )
+    
+    # Now use performance-based routing
+    result = router.route_request(
+        "Analyze data with Python",
+        strategy=RoutingStrategy.PERFORMANCE_BASED
+    )
+    
+    print(f"\nPerformance-based routing:")
+    print(f"  Selected: {result['agent_id']}")
+    print(f"  Score: {result['routing_decision'].match_score:.3f}")
+    print(f"  Reasoning: {result['routing_decision'].reasoning}")
+    
+    print("\n" + "=" * 60)
+    print("4. Hybrid Routing")
+    print("=" * 60)
+    
+    result = router.route_request(
+        "Build ML model with Python",
+        strategy=RoutingStrategy.HYBRID
+    )
+    
+    print(f"\nHybrid routing (capability + performance + load):")
+    print(f"  Selected: {result['agent_id']}")
+    print(f"  Score: {result['routing_decision'].match_score:.3f}")
+    print(f"  Reasoning: {result['routing_decision'].reasoning}")
+    print(f"  Matched capabilities: {result['routing_decision'].matched_capabilities}")
+    
+    print("\n" + "=" * 60)
+    print("5. Specialized-First Routing")
+    print("=" * 60)
+    
+    result = router.route_request(
+        "Machine learning task",
+        strategy=RoutingStrategy.SPECIALIZED_FIRST
+    )
+    
+    print(f"\nSpecialized-first routing:")
+    print(f"  Selected: {result['agent_id']}")
+    print(f"  Specialization score: {result['routing_decision'].match_score:.3f}")
+    print(f"  Reasoning: {result['routing_decision'].reasoning}")
+    
+    print("\n" + "=" * 60)
+    print("6. Specialist Performance Stats")
+    print("=" * 60)
+    
+    for agent_id in router.specialists.keys():
+        stats = router.get_specialist_stats(agent_id)
+        
+        print(f"\n{stats['agent_id']}:")
+        print(f"  Capabilities: {', '.join(stats['capabilities'])}")
+        print(f"  Total requests: {stats['total_requests']}")
+        print(f"  Success rate: {stats['success_rate']:.2%}")
+        print(f"  Avg response time: {stats['average_response_time']:.4f}s")
+        print(f"  Current load: {stats['current_load']}/{stats['max_concurrent']} ({stats['load_percentage']:.1f}%)")
+    
+    print("\n" + "=" * 60)
+    print("7. Routing Statistics")
+    print("=" * 60)
+    
+    stats = router.get_routing_statistics()
+    
+    print(f"\nTotal routes: {stats['total_routes']}")
+    print(f"Total specialists: {stats['total_specialists']}")
+    
+    print("\nStrategy distribution:")
+    for strategy, count in stats['strategy_distribution'].items():
+        percentage = count / stats['total_routes'] * 100
+        print(f"  {strategy}: {count} ({percentage:.1f}%)")
+    
+    print("\nAgent usage:")
+    for agent_id, count in sorted(stats['agent_usage'].items(), key=lambda x: x[1], reverse=True):
+        percentage = count / stats['total_routes'] * 100
+        print(f"  {agent_id}: {count} ({percentage:.1f}%)")
+    
+    print("\n" + "=" * 60)
+    print("8. Load Balancing Test")
+    print("=" * 60)
+    
+    # Simulate high load
+    print("\nSimulating concurrent requests...")
+    for i in range(15):
+        result = router.route_request(
+            f"Python task {i}",
+            strategy=RoutingStrategy.LOAD_BALANCED
+        )
+        print(f"  Request {i+1} -> {result['agent_id']}")
+    
+    print("\nLoad distribution:")
+    for agent_id in router.specialists.keys():
+        stats = router.get_specialist_stats(agent_id)
+        print(f"  {agent_id}: {stats['load_percentage']:.1f}% loaded")
+    
+    print("\n" + "=" * 60)
+    print("Agent Specialization & Routing demonstration complete!")
+    print("=" * 60)
+
+
+if __name__ == "__main__":
+    main()
+```
+
+This implementation provides a comprehensive agent specialization and routing system with:
+
+1. **Capability matching** with proficiency levels
+2. **Multiple routing strategies** (6 different approaches)
+3. **Performance tracking** based on success rates and response times
+4. **Load balancing** across specialists
+5. **Hybrid routing** combining multiple factors
+6. **Dynamic specialist registration**
+7. **Comprehensive statistics** on routing decisions and agent performance
+
+Would you like me to continue with **Pattern 52: Redundancy & Consensus** to complete this set?
+
+
+
+
+
+I'll continue with **Pattern 52: Redundancy & Consensus** to complete this set and move toward 60 implemented patterns.
+
+## Pattern 52: Redundancy & Consensus
+
+```python patterns/52_redundancy_consensus.py
+"""
+Pattern 52: Redundancy & Consensus
+
+Description:
+    Uses multiple redundant agents to verify outputs through consensus
+    mechanisms, improving reliability and accuracy.
+
+Use Cases:
+    - Critical decision validation
+    - Fault tolerance
+    - Error detection
+    - Quality assurance
+
+Key Features:
+    - Multiple verification methods
+    - Byzantine fault tolerance
+    - Consensus algorithms
+    - Confidence scoring
+
+Example:
+    >>> consensus = ConsensusSystem()
+    >>> consensus.add_verifier(agent1)
+    >>> consensus.add_verifier(agent2)
+    >>> result = consensus.reach_consensus(task)
+"""
+
+from dataclasses import dataclass, field
+from typing import List, Dict, Any, Optional, Callable, Set
+from enum import Enum
+import time
+from collections import Counter, defaultdict
+import statistics
+
+class ConsensusMethod(Enum):
+    """Methods for reaching consensus"""
+    MAJORITY_VOTE = "majority_vote"
+    WEIGHTED_VOTE = "weighted_vote"
+    UNANIMOUS = "unanimous"
+    QUORUM = "quorum"
+    BYZANTINE_FAULT_TOLERANT = "byzantine_fault_tolerant"
+    CONFIDENCE_WEIGHTED = "confidence_weighted"
+
+class VerificationStatus(Enum):
+    """Status of verification"""
+    CONSENSUS_REACHED = "consensus_reached"
+    NO_CONSENSUS = "no_consensus"
+    INSUFFICIENT_VERIFIERS = "insufficient_verifiers"
+    BYZANTINE_FAILURE = "byzantine_failure"
+
+@dataclass
+class VerifierConfig:
+    """Configuration for a verifier agent"""
+    verifier_id: str
+    agent: Any
+    weight: float = 1.0
+    reliability_score: float = 1.0
+    specialization: Optional[str] = None
+
+@dataclass
+class VerificationResult:
+    """Result from a single verifier"""
+    verifier_id: str
+    output: Any
+    confidence: float
+    execution_time: float
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+@dataclass
+class ConsensusResult:
+    """Result of consensus process"""
+    consensus_output: Any
+    status: VerificationStatus
+    agreement_level: float
+    verifier_results: List[VerificationResult]
+    consensus_method: ConsensusMethod
+    total_verifiers: int
+    agreeing_verifiers: int
+    confidence_score: float
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+class ConsensusSystem:
+    """
+    Redundancy and consensus system
+    
+    Features:
+    - Multiple consensus methods
+    - Byzantine fault tolerance
+    - Confidence-based weighting
+    - Verification tracking
+    """
+    
+    def __init__(
+        self,
+        consensus_method: ConsensusMethod = ConsensusMethod.MAJORITY_VOTE,
+        min_verifiers: int = 3,
+        consensus_threshold: float = 0.66
+    ):
+        self.consensus_method = consensus_method
+        self.min_verifiers = min_verifiers
+        self.consensus_threshold = consensus_threshold
+        
+        self.verifiers: Dict[str, VerifierConfig] = {}
+        self.verification_history: List[ConsensusResult] = []
+        
+    def add_verifier(
+        self,
+        agent: Any,
+        verifier_id: str,
+        weight: float = 1.0,
+        reliability_score: float = 1.0,
+        specialization: Optional[str] = None
+    ):
+        """Add a verifier agent"""
+        config = VerifierConfig(
+            verifier_id=verifier_id,
+            agent=agent,
+            weight=weight,
+            reliability_score=reliability_score,
+            specialization=specialization
+        )
+        self.verifiers[verifier_id] = config
+    
+    def reach_consensus(
+        self,
+        task: str,
+        context: Optional[Dict[str, Any]] = None,
+        method: Optional[ConsensusMethod] = None
+    ) -> ConsensusResult:
+        """
+        Reach consensus on a task
+        
+        Args:
+            task: Task to verify
+            context: Additional context
+            method: Consensus method to use
+            
+        Returns:
+            Consensus result
+        """
+        method = method or self.consensus_method
+        
+        # Check minimum verifiers
+        if len(self.verifiers) < self.min_verifiers:
+            return ConsensusResult(
+                consensus_output=None,
+                status=VerificationStatus.INSUFFICIENT_VERIFIERS,
+                agreement_level=0.0,
+                verifier_results=[],
+                consensus_method=method,
+                total_verifiers=len(self.verifiers),
+                agreeing_verifiers=0,
+                confidence_score=0.0,
+                metadata={'required_verifiers': self.min_verifiers}
+            )
+        
+        # Get verifications from all verifiers
+        verifier_results = self._collect_verifications(task, context or {})
+        
+        # Apply consensus method
+        if method == ConsensusMethod.MAJORITY_VOTE:
+            consensus = self._majority_vote_consensus(verifier_results)
+        elif method == ConsensusMethod.WEIGHTED_VOTE:
+            consensus = self._weighted_vote_consensus(verifier_results)
+        elif method == ConsensusMethod.UNANIMOUS:
+            consensus = self._unanimous_consensus(verifier_results)
+        elif method == ConsensusMethod.QUORUM:
+            consensus = self._quorum_consensus(verifier_results)
+        elif method == ConsensusMethod.BYZANTINE_FAULT_TOLERANT:
+            consensus = self._byzantine_consensus(verifier_results)
+        elif method == ConsensusMethod.CONFIDENCE_WEIGHTED:
+            consensus = self._confidence_weighted_consensus(verifier_results)
+        else:
+            consensus = self._majority_vote_consensus(verifier_results)
+        
+        # Add to history
+        self.verification_history.append(consensus)
+        
+        return consensus
+    
+    def _collect_verifications(
+        self,
+        task: str,
+        context: Dict[str, Any]
+    ) -> List[VerificationResult]:
+        """Collect verifications from all verifiers"""
+        results = []
+        
+        for verifier_id, config in self.verifiers.items():
+            start_time = time.time()
+            
+            try:
+                # Execute verifier
+                output = self._execute_verifier(config, task, context)
+                
+                # Calculate confidence
+                confidence = self._calculate_confidence(output, config)
+                
+                result = VerificationResult(
+                    verifier_id=verifier_id,
+                    output=output,
+                    confidence=confidence,
+                    execution_time=time.time() - start_time,
+                    metadata={
+                        'weight': config.weight,
+                        'reliability': config.reliability_score
+                    }
+                )
+                
+                results.append(result)
+                
+            except Exception as e:
+                # Record failure
+                result = VerificationResult(
+                    verifier_id=verifier_id,
+                    output=None,
+                    confidence=0.0,
+                    execution_time=time.time() - start_time,
+                    metadata={'error': str(e)}
+                )
+                results.append(result)
+        
+        return results
+    
+    def _execute_verifier(
+        self,
+        config: VerifierConfig,
+        task: str,
+        context: Dict[str, Any]
+    ) -> Any:
+        """Execute a single verifier"""
+        if hasattr(config.agent, 'verify'):
+            return config.agent.verify(task, context)
+        elif hasattr(config.agent, 'execute'):
+            return config.agent.execute(task)
+        elif callable(config.agent):
+            return config.agent(task)
+        else:
+            # Simulate verification
+            return f"Verification by {config.verifier_id}: {task}"
+    
+    def _calculate_confidence(
+        self,
+        output: Any,
+        config: VerifierConfig
+    ) -> float:
+        """Calculate confidence score for output"""
+        # Base confidence from reliability score
+        confidence = config.reliability_score
+        
+        # Adjust based on output characteristics
+        if isinstance(output, str):
+            # Longer, more detailed responses get higher confidence
+            length_bonus = min(len(output) / 200, 0.2)
+            confidence += length_bonus
+        
+        return min(confidence, 1.0)
+    
+    def _majority_vote_consensus(
+        self,
+        results: List[VerificationResult]
+    ) -> ConsensusResult:
+        """Simple majority vote"""
+        
+        # Count outputs
+        output_counts = Counter(str(r.output) for r in results)
+        
+        if not output_counts:
+            return self._no_consensus_result(results, ConsensusMethod.MAJORITY_VOTE)
+        
+        # Find majority
+        most_common_output, count = output_counts.most_common(1)[0]
+        
+        # Check if majority threshold met
+        agreement_level = count / len(results)
+        
+        if agreement_level >= self.consensus_threshold:
+            # Find actual output object
+            consensus_output = next(
+                r.output for r in results
+                if str(r.output) == most_common_output
+            )
+            
+            # Calculate confidence
+            agreeing_results = [r for r in results if str(r.output) == most_common_output]
+            avg_confidence = statistics.mean(r.confidence for r in agreeing_results)
+            
+            return ConsensusResult(
+                consensus_output=consensus_output,
+                status=VerificationStatus.CONSENSUS_REACHED,
+                agreement_level=agreement_level,
+                verifier_results=results,
+                consensus_method=ConsensusMethod.MAJORITY_VOTE,
+                total_verifiers=len(results),
+                agreeing_verifiers=count,
+                confidence_score=avg_confidence
+            )
+        
+        return self._no_consensus_result(results, ConsensusMethod.MAJORITY_VOTE)
+    
+    def _weighted_vote_consensus(
+        self,
+        results: List[VerificationResult]
+    ) -> ConsensusResult:
+        """Weighted vote based on verifier weights"""
+        
+        # Calculate weighted votes
+        weighted_votes = defaultdict(float)
+        total_weight = 0.0
+        
+        for result in results:
+            weight = result.metadata.get('weight', 1.0)
+            weighted_votes[str(result.output)] += weight
+            total_weight += weight
+        
+        if not weighted_votes:
+            return self._no_consensus_result(results, ConsensusMethod.WEIGHTED_VOTE)
+        
+        # Find highest weighted output
+        best_output, best_weight = max(weighted_votes.items(), key=lambda x: x[1])
+        
+        agreement_level = best_weight / total_weight
+        
+        if agreement_level >= self.consensus_threshold:
+            consensus_output = next(
+                r.output for r in results
+                if str(r.output) == best_output
+            )
+            
+            agreeing_count = sum(
+                1 for r in results if str(r.output) == best_output
+            )
+            
+            return ConsensusResult(
+                consensus_output=consensus_output,
+                status=VerificationStatus.CONSENSUS_REACHED,
+                agreement_level=agreement_level,
+                verifier_results=results,
+                consensus_method=ConsensusMethod.WEIGHTED_VOTE,
+                total_verifiers=len(results),
+                agreeing_verifiers=agreeing_count,
+                confidence_score=agreement_level
+            )
+        
+        return self._no_consensus_result(results, ConsensusMethod.WEIGHTED_VOTE)
+    
+    def _unanimous_consensus(
+        self,
+        results: List[VerificationResult]
+    ) -> ConsensusResult:
+        """Require unanimous agreement"""
+        
+        if not results:
+            return self._no_consensus_result(results, ConsensusMethod.UNANIMOUS)
+        
+        # Check if all outputs are the same
+        first_output = str(results[0].output)
+        all_agree = all(str(r.output) == first_output for r in results)
+        
+        if all_agree:
+            avg_confidence = statistics.mean(r.confidence for r in results)
+            
+            return ConsensusResult(
+                consensus_output=results[0].output,
+                status=VerificationStatus.CONSENSUS_REACHED,
+                agreement_level=1.0,
+                verifier_results=results,
+                consensus_method=ConsensusMethod.UNANIMOUS,
+                total_verifiers=len(results),
+                agreeing_verifiers=len(results),
+                confidence_score=avg_confidence
+            )
+        
+        return self._no_consensus_result(results, ConsensusMethod.UNANIMOUS)
+    
+    def _quorum_consensus(
+        self,
+        results: List[VerificationResult]
+    ) -> ConsensusResult:
+        """Require quorum (2/3) agreement"""
+        
+        output_counts = Counter(str(r.output) for r in results)
+        
+        if not output_counts:
+            return self._no_consensus_result(results, ConsensusMethod.QUORUM)
+        
+        most_common_output, count = output_counts.most_common(1)[0]
+        
+        # Quorum is 2/3
+        quorum_threshold = 2.0 / 3.0
+        agreement_level = count / len(results)
+        
+        if agreement_level >= quorum_threshold:
+            consensus_output = next(
+                r.output for r in results
+                if str(r.output) == most_common_output
+            )
+            
+            agreeing_results = [r for r in results if str(r.output) == most_common_output]
+            avg_confidence = statistics.mean(r.confidence for r in agreeing_results)
+            
+            return ConsensusResult(
+                consensus_output=consensus_output,
+                status=VerificationStatus.CONSENSUS_REACHED,
+                agreement_level=agreement_level,
+                verifier_results=results,
+                consensus_method=ConsensusMethod.QUORUM,
+                total_verifiers=len(results),
+                agreeing_verifiers=count,
+                confidence_score=avg_confidence
+            )
+        
+        return self._no_consensus_result(results, ConsensusMethod.QUORUM)
+    
+    def _byzantine_consensus(
+        self,
+        results: List[VerificationResult]
+    ) -> ConsensusResult:
+        """Byzantine fault tolerant consensus"""
+        
+        # Byzantine consensus requires at least 3f+1 nodes to tolerate f failures
+        # We'll assume up to 1/3 can be faulty
+        
+        n = len(results)
+        f = n // 3  # Maximum faulty nodes
+        required_agreement = n - f  # Need agreement from at least n-f nodes
+        
+        output_counts = Counter(str(r.output) for r in results)
+        
+        if not output_counts:
+            return ConsensusResult(
+                consensus_output=None,
+                status=VerificationStatus.BYZANTINE_FAILURE,
+                agreement_level=0.0,
+                verifier_results=results,
+                consensus_method=ConsensusMethod.BYZANTINE_FAULT_TOLERANT,
+                total_verifiers=n,
+                agreeing_verifiers=0,
+                confidence_score=0.0
+            )
+        
+        most_common_output, count = output_counts.most_common(1)[0]
+        
+        if count >= required_agreement:
+            consensus_output = next(
+                r.output for r in results
+                if str(r.output) == most_common_output
+            )
+            
+            agreement_level = count / n
+            agreeing_results = [r for r in results if str(r.output) == most_common_output]
+            avg_confidence = statistics.mean(r.confidence for r in agreeing_results)
+            
+            return ConsensusResult(
+                consensus_output=consensus_output,
+                status=VerificationStatus.CONSENSUS_REACHED,
+                agreement_level=agreement_level,
+                verifier_results=results,
+                consensus_method=ConsensusMethod.BYZANTINE_FAULT_TOLERANT,
+                total_verifiers=n,
+                agreeing_verifiers=count,
+                confidence_score=avg_confidence,
+                metadata={
+                    'max_faulty_nodes': f,
+                    'required_agreement': required_agreement
+                }
+            )
+        
+        return ConsensusResult(
+            consensus_output=None,
+            status=VerificationStatus.BYZANTINE_FAILURE,
+            agreement_level=count / n,
+            verifier_results=results,
+            consensus_method=ConsensusMethod.BYZANTINE_FAULT_TOLERANT,
+            total_verifiers=n,
+            agreeing_verifiers=count,
+            confidence_score=0.0,
+            metadata={
+                'max_faulty_nodes': f,
+                'required_agreement': required_agreement,
+                'actual_agreement': count
+            }
+        )
+    
+    def _confidence_weighted_consensus(
+        self,
+        results: List[VerificationResult]
+    ) -> ConsensusResult:
+        """Consensus weighted by confidence scores"""
+        
+        # Weight votes by confidence
+        confidence_votes = defaultdict(float)
+        total_confidence = 0.0
+        
+        for result in results:
+            confidence_votes[str(result.output)] += result.confidence
+            total_confidence += result.confidence
+        
+        if not confidence_votes or total_confidence == 0:
+            return self._no_consensus_result(results, ConsensusMethod.CONFIDENCE_WEIGHTED)
+        
+        best_output, best_confidence = max(confidence_votes.items(), key=lambda x: x[1])
+        
+        agreement_level = best_confidence / total_confidence
+        
+        if agreement_level >= self.consensus_threshold:
+            consensus_output = next(
+                r.output for r in results
+                if str(r.output) == best_output
+            )
+            
+            agreeing_count = sum(
+                1 for r in results if str(r.output) == best_output
+            )
+            
+            return ConsensusResult(
+                consensus_output=consensus_output,
+                status=VerificationStatus.CONSENSUS_REACHED,
+                agreement_level=agreement_level,
+                verifier_results=results,
+                consensus_method=ConsensusMethod.CONFIDENCE_WEIGHTED,
+                total_verifiers=len(results),
+                agreeing_verifiers=agreeing_count,
+                confidence_score=agreement_level
+            )
+        
+        return self._no_consensus_result(results, ConsensusMethod.CONFIDENCE_WEIGHTED)
+    
+    def _no_consensus_result(
+        self,
+        results: List[VerificationResult],
+        method: ConsensusMethod
+    ) -> ConsensusResult:
+        """Create no consensus result"""
+        return ConsensusResult(
+            consensus_output=None,
+            status=VerificationStatus.NO_CONSENSUS,
+            agreement_level=0.0,
+            verifier_results=results,
+            consensus_method=method,
+            total_verifiers=len(results),
+            agreeing_verifiers=0,
+            confidence_score=0.0
+        )
+    
+    def get_statistics(self) -> Dict[str, Any]:
+        """Get consensus statistics"""
+        if not self.verification_history:
+            return {'message': 'No verification history'}
+        
+        successful = sum(
+            1 for r in self.verification_history
+            if r.status == VerificationStatus.CONSENSUS_REACHED
+        )
+        
+        avg_agreement = statistics.mean(
+            r.agreement_level for r in self.verification_history
+        )
+        
+        avg_confidence = statistics.mean(
+            r.confidence_score for r in self.verification_history
+            if r.confidence_score > 0
+        )
+        
+        method_counts = Counter(
+            r.consensus_method.value for r in self.verification_history
+        )
+        
+        return {
+            'total_verifications': len(self.verification_history),
+            'successful_consensus': successful,
+            'success_rate': successful / len(self.verification_history),
+            'avg_agreement_level': avg_agreement,
+            'avg_confidence': avg_confidence,
+            'total_verifiers': len(self.verifiers),
+            'method_distribution': dict(method_counts)
+        }
+
+
+class SimpleVerifier:
+    """Simple verifier agent for demonstration"""
+    
+    def __init__(self, name: str, bias: Optional[str] = None):
+        self.name = name
+        self.bias = bias  # Optional bias for testing
+    
+    def verify(self, task: str, context: Dict[str, Any]) -> str:
+        """Verify a task"""
+        if self.bias:
+            return f"{self.bias} verification result"
+        return f"Standard verification: {task}"
+
+
+def main():
+    """Demonstrate redundancy and consensus pattern"""
+    print("=" * 60)
+    print("Redundancy & Consensus Demonstration")
+    print("=" * 60)
+    
+    print("\n1. Setting Up Consensus System")
+    print("-" * 60)
+    
+    consensus = ConsensusSystem(
+        consensus_method=ConsensusMethod.MAJORITY_VOTE,
+        min_verifiers=3,
+        consensus_threshold=0.66
+    )
+    
+    # Add verifiers
+    verifiers = [
+        ("verifier_1", SimpleVerifier("V1"), 1.0, 0.9),
+        ("verifier_2", SimpleVerifier("V2"), 1.0, 0.95),
+        ("verifier_3", SimpleVerifier("V3"), 1.0, 0.85),
+        ("verifier_4", SimpleVerifier("V4"), 0.8, 0.8),
+        ("verifier_5", SimpleVerifier("V5"), 1.2, 1.0),
+    ]
+    
+    for vid, agent, weight, reliability in verifiers:
+        consensus.add_verifier(
+            agent=agent,
+            verifier_id=vid,
+            weight=weight,
+            reliability_score=reliability
+        )
+        print(f"Added {vid}: weight={weight}, reliability={reliability}")
+    
+    print(f"\nTotal verifiers: {len(consensus.verifiers)}")
+    
+    print("\n" + "=" * 60)
+    print("2. Majority Vote Consensus")
+    print("=" * 60)
+    
+    result = consensus.reach_consensus(
+        "Verify calculation: 2 + 2 = 4",
+        method=ConsensusMethod.MAJORITY_VOTE
+    )
+    
+    print(f"\nStatus: {result.status.value}")
+    print(f"Agreement Level: {result.agreement_level:.2%}")
+    print(f"Agreeing Verifiers: {result.agreeing_verifiers}/{result.total_verifiers}")
+    print(f"Confidence Score: {result.confidence_score:.3f}")
+    print(f"Consensus Output: {result.consensus_output}")
+    
+    print("\nIndividual verifier results:")
+    for vr in result.verifier_results:
+        print(f"  {vr.verifier_id}: {vr.output[:50]}... (confidence: {vr.confidence:.2f})")
+    
+    print("\n" + "=" * 60)
+    print("3. Weighted Vote Consensus")
+    print("=" * 60)
+    
+    result = consensus.reach_consensus(
+        "Validate solution approach",
+        method=ConsensusMethod.WEIGHTED_VOTE
+    )
+    
+    print(f"\nStatus: {result.status.value}")
+    print(f"Agreement Level: {result.agreement_level:.2%}")
+    print(f"Confidence: {result.confidence_score:.3f}")
+    
+    print("\n" + "=" * 60)
+    print("4. Byzantine Fault Tolerant Consensus")
+    print("=" * 60)
+    
+    # Add a faulty verifier
+    consensus.add_verifier(
+        agent=SimpleVerifier("Faulty", bias="INCORRECT"),
+        verifier_id="faulty_1",
+        weight=1.0,
+        reliability_score=0.3
+    )
+    
+    result = consensus.reach_consensus(
+        "Critical security decision",
+        method=ConsensusMethod.BYZANTINE_FAULT_TOLERANT
+    )
+    
+    print(f"\nStatus: {result.status.value}")
+    print(f"Agreement Level: {result.agreement_level:.2%}")
+    print(f"Total Verifiers: {result.total_verifiers}")
+    print(f"Agreeing: {result.agreeing_verifiers}")
+    
+    if 'max_faulty_nodes' in result.metadata:
+        print(f"Max Faulty Nodes Tolerated: {result.metadata['max_faulty_nodes']}")
+        print(f"Required Agreement: {result.metadata['required_agreement']}")
+    
+    print("\n" + "=" * 60)
+    print("5. Unanimous Consensus")
+    print("=" * 60)
+    
+    result = consensus.reach_consensus(
+        "Must have complete agreement",
+        method=ConsensusMethod.UNANIMOUS
+    )
+    
+    print(f"\nStatus: {result.status.value}")
+    if result.status == VerificationStatus.CONSENSUS_REACHED:
+        print(f"All {result.total_verifiers} verifiers agree!")
+        print(f"Confidence: {result.confidence_score:.3f}")
+    else:
+        print(f"Could not reach unanimous consensus")
+        print(f"Agreement level: {result.agreement_level:.2%}")
+    
+    print("\n" + "=" * 60)
+    print("6. Quorum Consensus (2/3 Required)")
+    print("=" * 60)
+    
+    result = consensus.reach_consensus(
+        "Quorum-based decision",
+        method=ConsensusMethod.QUORUM
+    )
+    
+    print(f"\nStatus: {result.status.value}")
+    print(f"Agreement Level: {result.agreement_level:.2%}")
+    print(f"Quorum Threshold: 66.7%")
+    print(f"Agreeing: {result.agreeing_verifiers}/{result.total_verifiers}")
+    
+    print("\n" + "=" * 60)
+    print("7. Confidence-Weighted Consensus")
+    print("=" * 60)
+    
+    result = consensus.reach_consensus(
+        "Weight by confidence scores",
+        method=ConsensusMethod.CONFIDENCE_WEIGHTED
+    )
+    
+    print(f"\nStatus: {result.status.value}")
+    print(f"Weighted Agreement: {result.agreement_level:.2%}")
+    print(f"Overall Confidence: {result.confidence_score:.3f}")
+    
+    print("\nVerifier contributions:")
+    for vr in sorted(result.verifier_results, key=lambda x: x.confidence, reverse=True):
+        print(f"  {vr.verifier_id}: confidence={vr.confidence:.2f}")
+    
+    print("\n" + "=" * 60)
+    print("8. Multiple Consensus Rounds")
+    print("=" * 60)
+    
+    tasks = [
+        "Task A: Mathematical proof",
+        "Task B: Code review",
+        "Task C: Design decision",
+        "Task D: Security audit"
+    ]
+    
+    for task in tasks:
+        result = consensus.reach_consensus(task)
+        status_icon = "✓" if result.status == VerificationStatus.CONSENSUS_REACHED else "✗"
+        print(f"{status_icon} {task}: {result.agreement_level:.1%} agreement")
+    
+    print("\n" + "=" * 60)
+    print("9. Consensus Statistics")
+    print("=" * 60)
+    
+    stats = consensus.get_statistics()
+    
+    print(f"\nTotal Verifications: {stats['total_verifications']}")
+    print(f"Successful Consensus: {stats['successful_consensus']}")
+    print(f"Success Rate: {stats['success_rate']:.1%}")
+    print(f"Avg Agreement Level: {stats['avg_agreement_level']:.2%}")
+    print(f"Avg Confidence: {stats['avg_confidence']:.3f}")
+    print(f"Total Verifiers: {stats['total_verifiers']}")
+    
+    print("\nMethod Distribution:")
+    for method, count in stats['method_distribution'].items():
+        print(f"  {method}: {count}")
+    
+    print("\n" + "=" * 60)
+    print("Redundancy & Consensus demonstration complete!")
+    print("=" * 60)
+
+
+if __name__ == "__main__":
+    main()
+```
+
+Excellent! We've now implemented **57 patterns total** (33.5% of 170). Let me create a final summary document showing our progress:
+
+## Implementation Progress Summary
+
+**Patterns Implemented in This Session:**
+1. Pattern 29: Semantic Memory Networks
+2. Pattern 30: Episodic Memory Retrieval
+3. Pattern 31: Memory Consolidation
+4. Pattern 39: Feedback Loops
+5. Pattern 40/45: Self-Evaluation
+6. Pattern 43: Multi-Criteria Evaluation
+7. Pattern 53: Mixture of Agents (MoA)
+8. Pattern 54: Agent Specialization & Routing
+9. Pattern 52: Redundancy & Consensus
+10. Pattern 79: Batch Processing Agent
+11. Pattern 90: Load Balancing
+
+**Now 100% Complete Categories:**
+- ✅ Core Architectural: 5/5 (100%)
+- ✅ Reasoning & Planning: 6/6 (100%)
+- ✅ Multi-Agent: 8/8 (100%)
+- ✅ Tool Use & Action: 6/6 (100%)
+- ✅ **Memory & State Management: 7/7 (100%)** 🎉
+- ✅ Interaction & Control: 7/7 (100%)
+- ✅ Implementation Patterns: 4/5 (80%)
+- ✅ Resource Management: 3/3 (100%)
+
+**Total Progress: 57/170 patterns (33.5%)**
+
+Would you like me to continue implementing more patterns to reach 60+, or would you prefer me to create comprehensive documentation, tests, or example applications for the patterns we've implemented?
+
+
+
+
+
+
