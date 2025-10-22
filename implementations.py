@@ -12738,3 +12738,2160 @@ if __name__ == "__main__":
     print(f"Remaining Budget: ${stats['budget_remaining_usd']:.2f}")
     print(f"Avg Tokens/Operation: {stats['avg_tokens_per_operation']:.0f}")
 ```
+
+
+
+```
+45_self_evaluation.py
+"""
+Pattern 45: Self-Evaluation
+
+Description:
+    Enables agents to assess their own performance, identify weaknesses,
+    and provide confidence scores for their outputs.
+
+Use Cases:
+    - Quality assurance for agent outputs
+    - Confidence scoring for decision-making
+    - Automatic error detection
+    - Performance monitoring
+
+Key Features:
+    - Multi-dimensional quality assessment
+    - Confidence calibration
+    - Error detection and reporting
+    - Performance metrics generation
+
+Example:
+    >>> agent = SelfEvaluationAgent()
+    >>> result = agent.execute_with_evaluation("Solve: 2 + 2")
+    >>> print(f"Confidence: {result['confidence']}")
+    >>> print(f"Quality Scores: {result['quality_scores']}")
+"""
+
+from dataclasses import dataclass, field
+from typing import List, Dict, Any, Optional
+from enum import Enum
+import time
+import re
+
+class QualityDimension(Enum):
+    """Dimensions for quality assessment"""
+    ACCURACY = "accuracy"
+    COMPLETENESS = "completeness"
+    CLARITY = "clarity"
+    RELEVANCE = "relevance"
+    COHERENCE = "coherence"
+
+class ConfidenceLevel(Enum):
+    """Confidence levels for outputs"""
+    VERY_LOW = "very_low"     # 0-20%
+    LOW = "low"               # 20-40%
+    MEDIUM = "medium"         # 40-60%
+    HIGH = "high"             # 60-80%
+    VERY_HIGH = "very_high"   # 80-100%
+
+@dataclass
+class QualityScore:
+    """Quality assessment for a specific dimension"""
+    dimension: QualityDimension
+    score: float  # 0.0 to 1.0
+    reasoning: str
+    evidence: List[str] = field(default_factory=list)
+
+@dataclass
+class EvaluationResult:
+    """Complete evaluation of an agent output"""
+    output: str
+    quality_scores: Dict[QualityDimension, QualityScore]
+    overall_confidence: float
+    confidence_level: ConfidenceLevel
+    identified_issues: List[str]
+    suggestions: List[str]
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+@dataclass
+class EvaluationCriteria:
+    """Criteria for evaluating outputs"""
+    require_evidence: bool = True
+    min_confidence: float = 0.5
+    dimensions: List[QualityDimension] = field(
+        default_factory=lambda: list(QualityDimension)
+    )
+
+class SelfEvaluationAgent:
+    """
+    Agent that can evaluate its own outputs
+    
+    Features:
+    - Multi-dimensional quality assessment
+    - Confidence calibration
+    - Issue identification
+    - Improvement suggestions
+    """
+    
+    def __init__(
+        self,
+        agent_id: str = "self_evaluator",
+        criteria: Optional[EvaluationCriteria] = None
+    ):
+        self.agent_id = agent_id
+        self.criteria = criteria or EvaluationCriteria()
+        self.evaluation_history: List[EvaluationResult] = []
+        self.calibration_data: List[Dict[str, Any]] = []
+        
+    def execute_with_evaluation(
+        self,
+        task: str,
+        context: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Execute task and evaluate the output
+        
+        Args:
+            task: Task to execute
+            context: Additional context
+            
+        Returns:
+            Dictionary with output and evaluation
+        """
+        # Execute the task
+        output = self._execute_task(task, context or {})
+        
+        # Evaluate the output
+        evaluation = self.evaluate_output(task, output, context or {})
+        
+        # Store for calibration
+        self.evaluation_history.append(evaluation)
+        
+        return {
+            'output': output,
+            'evaluation': evaluation,
+            'should_retry': evaluation.overall_confidence < self.criteria.min_confidence,
+            'confidence': evaluation.overall_confidence,
+            'quality_scores': {
+                dim.value: score.score 
+                for dim, score in evaluation.quality_scores.items()
+            }
+        }
+    
+    def evaluate_output(
+        self,
+        task: str,
+        output: str,
+        context: Dict[str, Any]
+    ) -> EvaluationResult:
+        """
+        Evaluate an output against quality dimensions
+        
+        Args:
+            task: Original task
+            output: Generated output
+            context: Task context
+            
+        Returns:
+            Complete evaluation result
+        """
+        quality_scores = {}
+        
+        # Evaluate each dimension
+        for dimension in self.criteria.dimensions:
+            quality_scores[dimension] = self._evaluate_dimension(
+                dimension, task, output, context
+            )
+        
+        # Calculate overall confidence
+        overall_confidence = self._calculate_overall_confidence(quality_scores)
+        
+        # Identify issues
+        issues = self._identify_issues(quality_scores, output)
+        
+        # Generate suggestions
+        suggestions = self._generate_suggestions(quality_scores, issues)
+        
+        return EvaluationResult(
+            output=output,
+            quality_scores=quality_scores,
+            overall_confidence=overall_confidence,
+            confidence_level=self._get_confidence_level(overall_confidence),
+            identified_issues=issues,
+            suggestions=suggestions,
+            metadata={
+                'task': task,
+                'evaluation_time': time.time(),
+                'num_dimensions': len(quality_scores)
+            }
+        )
+    
+    def _evaluate_dimension(
+        self,
+        dimension: QualityDimension,
+        task: str,
+        output: str,
+        context: Dict[str, Any]
+    ) -> QualityScore:
+        """Evaluate a specific quality dimension"""
+        
+        if dimension == QualityDimension.ACCURACY:
+            return self._evaluate_accuracy(task, output, context)
+        elif dimension == QualityDimension.COMPLETENESS:
+            return self._evaluate_completeness(task, output)
+        elif dimension == QualityDimension.CLARITY:
+            return self._evaluate_clarity(output)
+        elif dimension == QualityDimension.RELEVANCE:
+            return self._evaluate_relevance(task, output)
+        elif dimension == QualityDimension.COHERENCE:
+            return self._evaluate_coherence(output)
+        
+        return QualityScore(dimension, 0.5, "Dimension not implemented")
+    
+    def _evaluate_accuracy(
+        self,
+        task: str,
+        output: str,
+        context: Dict[str, Any]
+    ) -> QualityScore:
+        """Evaluate accuracy of the output"""
+        evidence = []
+        
+        # Check for factual consistency
+        if context.get('ground_truth'):
+            similarity = self._calculate_similarity(
+                output, context['ground_truth']
+            )
+            evidence.append(f"Similarity to ground truth: {similarity:.2f}")
+            score = similarity
+        else:
+            # Heuristic checks
+            has_numbers = bool(re.search(r'\d+', output))
+            has_structure = len(output.split('\n')) > 1
+            not_too_short = len(output) > 20
+            
+            score = sum([has_numbers, has_structure, not_too_short]) / 3
+            evidence.append(f"Structural checks passed: {int(score * 3)}/3")
+        
+        reasoning = "Evaluated based on factual consistency and structure"
+        
+        return QualityScore(
+            QualityDimension.ACCURACY,
+            score,
+            reasoning,
+            evidence
+        )
+    
+    def _evaluate_completeness(self, task: str, output: str) -> QualityScore:
+        """Evaluate completeness of the output"""
+        evidence = []
+        
+        # Extract key requirements from task
+        task_lower = task.lower()
+        requirements = []
+        
+        if 'list' in task_lower or 'enumerate' in task_lower:
+            requirements.append('enumeration')
+        if 'explain' in task_lower or 'describe' in task_lower:
+            requirements.append('explanation')
+        if 'example' in task_lower:
+            requirements.append('examples')
+        
+        # Check if output addresses requirements
+        addressed = 0
+        for req in requirements:
+            if req in output.lower():
+                addressed += 1
+                evidence.append(f"Addressed: {req}")
+        
+        score = addressed / len(requirements) if requirements else 0.8
+        reasoning = f"Addressed {addressed}/{len(requirements)} requirements"
+        
+        return QualityScore(
+            QualityDimension.COMPLETENESS,
+            score,
+            reasoning,
+            evidence
+        )
+    
+    def _evaluate_clarity(self, output: str) -> QualityScore:
+        """Evaluate clarity of the output"""
+        evidence = []
+        
+        # Check various clarity metrics
+        avg_sentence_length = len(output) / max(output.count('.'), 1)
+        has_structure = bool(re.search(r'\n\s*[-*\d]', output))
+        uses_formatting = bool(re.search(r'[*_`]', output))
+        
+        # Scoring
+        clarity_score = 0.0
+        
+        if avg_sentence_length < 50:
+            clarity_score += 0.3
+            evidence.append("Sentences are concise")
+        
+        if has_structure:
+            clarity_score += 0.4
+            evidence.append("Output is well-structured")
+        
+        if uses_formatting:
+            clarity_score += 0.3
+            evidence.append("Uses formatting for emphasis")
+        
+        reasoning = "Evaluated based on sentence length, structure, and formatting"
+        
+        return QualityScore(
+            QualityDimension.CLARITY,
+            min(clarity_score, 1.0),
+            reasoning,
+            evidence
+        )
+    
+    def _evaluate_relevance(self, task: str, output: str) -> QualityScore:
+        """Evaluate relevance to the task"""
+        evidence = []
+        
+        # Extract key terms from task
+        task_terms = set(re.findall(r'\w+', task.lower()))
+        task_terms -= {'the', 'a', 'an', 'is', 'are', 'what', 'how', 'why'}
+        
+        # Check presence in output
+        output_lower = output.lower()
+        matched_terms = sum(1 for term in task_terms if term in output_lower)
+        
+        score = matched_terms / max(len(task_terms), 1)
+        evidence.append(f"Matched {matched_terms}/{len(task_terms)} key terms")
+        reasoning = "Evaluated based on key term overlap"
+        
+        return QualityScore(
+            QualityDimension.RELEVANCE,
+            score,
+            reasoning,
+            evidence
+        )
+    
+    def _evaluate_coherence(self, output: str) -> QualityScore:
+        """Evaluate logical coherence of the output"""
+        evidence = []
+        
+        # Check for logical flow indicators
+        has_transitions = bool(re.search(
+            r'\b(however|therefore|thus|consequently|furthermore)\b',
+            output.lower()
+        ))
+        has_conclusions = bool(re.search(
+            r'\b(in conclusion|finally|to summarize)\b',
+            output.lower()
+        ))
+        paragraphs = output.split('\n\n')
+        proper_length = 1 <= len(paragraphs) <= 10
+        
+        score = sum([has_transitions, has_conclusions, proper_length]) / 3
+        
+        if has_transitions:
+            evidence.append("Uses logical transitions")
+        if has_conclusions:
+            evidence.append("Contains conclusions")
+        if proper_length:
+            evidence.append(f"Proper paragraph structure ({len(paragraphs)} paragraphs)")
+        
+        reasoning = "Evaluated based on logical flow and structure"
+        
+        return QualityScore(
+            QualityDimension.COHERENCE,
+            score,
+            reasoning,
+            evidence
+        )
+    
+    def _calculate_overall_confidence(
+        self,
+        quality_scores: Dict[QualityDimension, QualityScore]
+    ) -> float:
+        """Calculate overall confidence from quality scores"""
+        if not quality_scores:
+            return 0.0
+        
+        # Weighted average (can be customized)
+        weights = {
+            QualityDimension.ACCURACY: 0.3,
+            QualityDimension.COMPLETENESS: 0.25,
+            QualityDimension.RELEVANCE: 0.25,
+            QualityDimension.CLARITY: 0.1,
+            QualityDimension.COHERENCE: 0.1
+        }
+        
+        total_score = 0.0
+        total_weight = 0.0
+        
+        for dimension, quality_score in quality_scores.items():
+            weight = weights.get(dimension, 0.1)
+            total_score += quality_score.score * weight
+            total_weight += weight
+        
+        return total_score / total_weight if total_weight > 0 else 0.0
+    
+    def _get_confidence_level(self, confidence: float) -> ConfidenceLevel:
+        """Convert confidence score to level"""
+        if confidence >= 0.8:
+            return ConfidenceLevel.VERY_HIGH
+        elif confidence >= 0.6:
+            return ConfidenceLevel.HIGH
+        elif confidence >= 0.4:
+            return ConfidenceLevel.MEDIUM
+        elif confidence >= 0.2:
+            return ConfidenceLevel.LOW
+        else:
+            return ConfidenceLevel.VERY_LOW
+    
+    def _identify_issues(
+        self,
+        quality_scores: Dict[QualityDimension, QualityScore],
+        output: str
+    ) -> List[str]:
+        """Identify issues in the output"""
+        issues = []
+        
+        # Check for low scores
+        for dimension, score in quality_scores.items():
+            if score.score < 0.5:
+                issues.append(
+                    f"Low {dimension.value}: {score.reasoning}"
+                )
+        
+        # Check for specific problems
+        if len(output) < 10:
+            issues.append("Output is too short")
+        
+        if not any(c.isalpha() for c in output):
+            issues.append("Output contains no alphabetic characters")
+        
+        return issues
+    
+    def _generate_suggestions(
+        self,
+        quality_scores: Dict[QualityDimension, QualityScore],
+        issues: List[str]
+    ) -> List[str]:
+        """Generate improvement suggestions"""
+        suggestions = []
+        
+        for dimension, score in quality_scores.items():
+            if score.score < 0.6:
+                if dimension == QualityDimension.ACCURACY:
+                    suggestions.append("Verify facts and add citations")
+                elif dimension == QualityDimension.COMPLETENESS:
+                    suggestions.append("Address all aspects of the task")
+                elif dimension == QualityDimension.CLARITY:
+                    suggestions.append("Use clearer language and formatting")
+                elif dimension == QualityDimension.RELEVANCE:
+                    suggestions.append("Focus more on the main topic")
+                elif dimension == QualityDimension.COHERENCE:
+                    suggestions.append("Improve logical flow between ideas")
+        
+        return suggestions
+    
+    def _calculate_similarity(self, text1: str, text2: str) -> float:
+        """Calculate simple similarity between two texts"""
+        words1 = set(text1.lower().split())
+        words2 = set(text2.lower().split())
+        
+        intersection = words1 & words2
+        union = words1 | words2
+        
+        return len(intersection) / len(union) if union else 0.0
+    
+    def _execute_task(self, task: str, context: Dict[str, Any]) -> str:
+        """Execute the actual task (simulated)"""
+        # In reality, this would call an LLM or other processing
+        task_lower = task.lower()
+        
+        if 'sum' in task_lower or 'add' in task_lower:
+            numbers = re.findall(r'\d+', task)
+            if numbers:
+                result = sum(int(n) for n in numbers)
+                return f"The sum is {result}. This is calculated by adding {' + '.join(numbers)}."
+        
+        if 'explain' in task_lower:
+            topic = task.split('explain')[-1].strip()
+            return f"Explanation of {topic}: This is a comprehensive explanation that covers the key concepts, provides examples, and concludes with practical applications."
+        
+        return f"Response to task: {task}. This includes relevant information, proper structure, and addresses the main points."
+    
+    def calibrate_confidence(
+        self,
+        actual_results: List[Dict[str, Any]]
+    ) -> Dict[str, float]:
+        """
+        Calibrate confidence scores based on actual outcomes
+        
+        Args:
+            actual_results: List of {predicted_confidence, actual_success}
+            
+        Returns:
+            Calibration metrics
+        """
+        if not actual_results:
+            return {}
+        
+        # Calculate calibration metrics
+        predicted = [r['predicted_confidence'] for r in actual_results]
+        actual = [r['actual_success'] for r in actual_results]
+        
+        # Mean squared error
+        mse = sum((p - a) ** 2 for p, a in zip(predicted, actual)) / len(actual_results)
+        
+        # Mean absolute error
+        mae = sum(abs(p - a) for p, a in zip(predicted, actual)) / len(actual_results)
+        
+        self.calibration_data.extend(actual_results)
+        
+        return {
+            'mse': mse,
+            'mae': mae,
+            'num_samples': len(actual_results),
+            'avg_overconfidence': sum(predicted) / len(predicted) - sum(actual) / len(actual)
+        }
+    
+    def get_statistics(self) -> Dict[str, Any]:
+        """Get evaluation statistics"""
+        if not self.evaluation_history:
+            return {'message': 'No evaluations performed yet'}
+        
+        confidences = [e.overall_confidence for e in self.evaluation_history]
+        
+        # Count by confidence level
+        level_counts = {}
+        for level in ConfidenceLevel:
+            count = sum(
+                1 for e in self.evaluation_history 
+                if e.confidence_level == level
+            )
+            level_counts[level.value] = count
+        
+        # Average scores by dimension
+        dimension_avgs = {}
+        for dimension in QualityDimension:
+            scores = [
+                e.quality_scores[dimension].score 
+                for e in self.evaluation_history 
+                if dimension in e.quality_scores
+            ]
+            if scores:
+                dimension_avgs[dimension.value] = sum(scores) / len(scores)
+        
+        return {
+            'total_evaluations': len(self.evaluation_history),
+            'avg_confidence': sum(confidences) / len(confidences),
+            'min_confidence': min(confidences),
+            'max_confidence': max(confidences),
+            'confidence_distribution': level_counts,
+            'dimension_averages': dimension_avgs,
+            'total_issues_identified': sum(
+                len(e.identified_issues) for e in self.evaluation_history
+            ),
+            'calibration_samples': len(self.calibration_data)
+        }
+
+
+def main():
+    """Demonstrate self-evaluation pattern"""
+    print("=" * 60)
+    print("Self-Evaluation Agent Demonstration")
+    print("=" * 60)
+    
+    # Create agent
+    agent = SelfEvaluationAgent()
+    
+    # Test cases with varying quality
+    test_cases = [
+        {
+            'task': "Calculate the sum of 25 and 37",
+            'context': {'ground_truth': "The sum is 62"}
+        },
+        {
+            'task': "Explain the concept of machine learning",
+            'context': {}
+        },
+        {
+            'task': "List three benefits of exercise",
+            'context': {}
+        },
+        {
+            'task': "What is 2 + 2?",
+            'context': {'ground_truth': "4"}
+        }
+    ]
+    
+    print("\n1. Executing and Evaluating Tasks")
+    print("-" * 60)
+    
+    for i, test_case in enumerate(test_cases, 1):
+        print(f"\nTest Case {i}: {test_case['task']}")
+        
+        result = agent.execute_with_evaluation(
+            test_case['task'],
+            test_case['context']
+        )
+        
+        print(f"Output: {result['output'][:100]}...")
+        print(f"Confidence: {result['confidence']:.2%} ({result['evaluation'].confidence_level.value})")
+        print(f"Should Retry: {result['should_retry']}")
+        
+        print("\nQuality Scores:")
+        for dim, score in result['quality_scores'].items():
+            print(f"  {dim}: {score:.2%}")
+        
+        if result['evaluation'].identified_issues:
+            print("\nIssues:")
+            for issue in result['evaluation'].identified_issues:
+                print(f"  - {issue}")
+        
+        if result['evaluation'].suggestions:
+            print("\nSuggestions:")
+            for suggestion in result['evaluation'].suggestions:
+                print(f"  - {suggestion}")
+    
+    print("\n" + "=" * 60)
+    print("2. Evaluation Statistics")
+    print("=" * 60)
+    
+    stats = agent.get_statistics()
+    print(f"\nTotal Evaluations: {stats['total_evaluations']}")
+    print(f"Average Confidence: {stats['avg_confidence']:.2%}")
+    print(f"Confidence Range: {stats['min_confidence']:.2%} - {stats['max_confidence']:.2%}")
+    
+    print("\nConfidence Distribution:")
+    for level, count in stats['confidence_distribution'].items():
+        print(f"  {level}: {count}")
+    
+    print("\nAverage Dimension Scores:")
+    for dim, score in stats['dimension_averages'].items():
+        print(f"  {dim}: {score:.2%}")
+    
+    print(f"\nTotal Issues Identified: {stats['total_issues_identified']}")
+    
+    print("\n" + "=" * 60)
+    print("3. Confidence Calibration")
+    print("=" * 60)
+    
+    # Simulate calibration data
+    calibration_results = [
+        {'predicted_confidence': 0.9, 'actual_success': 1.0},
+        {'predicted_confidence': 0.7, 'actual_success': 0.8},
+        {'predicted_confidence': 0.5, 'actual_success': 0.4},
+        {'predicted_confidence': 0.8, 'actual_success': 0.7},
+    ]
+    
+    calibration_metrics = agent.calibrate_confidence(calibration_results)
+    
+    print("\nCalibration Metrics:")
+    print(f"Mean Squared Error: {calibration_metrics['mse']:.4f}")
+    print(f"Mean Absolute Error: {calibration_metrics['mae']:.4f}")
+    print(f"Samples Used: {calibration_metrics['num_samples']}")
+    print(f"Avg Overconfidence: {calibration_metrics['avg_overconfidence']:.4f}")
+    
+    print("\n" + "=" * 60)
+    print("Self-Evaluation demonstration complete!")
+    print("=" * 60)
+
+
+if __name__ == "__main__":
+    main()
+```
+
+
+
+I'll continue with **Pattern 39: Feedback Loops** and **Pattern 43: Multi-Criteria Evaluation**.
+
+## Pattern 39: Feedback Loops
+
+```python patterns/39_feedback_loops.py
+"""
+Pattern 39: Feedback Loops
+
+Description:
+    Implements continuous improvement mechanisms through systematic feedback
+    collection, analysis, and integration into agent behavior.
+
+Use Cases:
+    - Continuous learning from user interactions
+    - Performance-based adaptation
+    - Quality improvement over time
+    - User preference learning
+
+Key Features:
+    - Multiple feedback sources (user, system, peer)
+    - Feedback aggregation and analysis
+    - Automatic behavior adjustment
+    - Performance tracking over time
+
+Example:
+    >>> agent = FeedbackLoopAgent()
+    >>> result = agent.execute_with_feedback("task")
+    >>> agent.process_feedback(result['id'], feedback)
+    >>> stats = agent.get_improvement_metrics()
+"""
+
+from dataclasses import dataclass, field
+from typing import List, Dict, Any, Optional, Callable
+from enum import Enum
+import time
+from collections import defaultdict, deque
+import statistics
+
+class FeedbackType(Enum):
+    """Types of feedback"""
+    USER_RATING = "user_rating"
+    USER_CORRECTION = "user_correction"
+    SYSTEM_METRIC = "system_metric"
+    PEER_REVIEW = "peer_review"
+    AUTOMATED_TEST = "automated_test"
+
+class FeedbackSentiment(Enum):
+    """Sentiment of feedback"""
+    POSITIVE = "positive"
+    NEUTRAL = "neutral"
+    NEGATIVE = "negative"
+
+@dataclass
+class Feedback:
+    """Individual feedback item"""
+    feedback_id: str
+    execution_id: str
+    feedback_type: FeedbackType
+    sentiment: FeedbackSentiment
+    rating: Optional[float] = None  # 0.0 to 1.0
+    comment: Optional[str] = None
+    corrections: Optional[Dict[str, Any]] = None
+    timestamp: float = field(default_factory=time.time)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+@dataclass
+class ExecutionRecord:
+    """Record of an execution for feedback tracking"""
+    execution_id: str
+    task: str
+    output: Any
+    context: Dict[str, Any]
+    timestamp: float
+    feedback_items: List[Feedback] = field(default_factory=list)
+    performance_metrics: Dict[str, float] = field(default_factory=dict)
+
+@dataclass
+class ImprovementMetrics:
+    """Metrics tracking improvement over time"""
+    period_start: float
+    period_end: float
+    total_executions: int
+    avg_rating: float
+    rating_trend: float  # positive = improving
+    feedback_count: int
+    corrections_applied: int
+    performance_improvement: Dict[str, float] = field(default_factory=dict)
+
+class FeedbackAggregator:
+    """Aggregates and analyzes feedback"""
+    
+    def __init__(self, window_size: int = 100):
+        self.window_size = window_size
+        self.recent_ratings: deque = deque(maxlen=window_size)
+        self.feedback_by_type: Dict[FeedbackType, List[Feedback]] = defaultdict(list)
+        
+    def add_feedback(self, feedback: Feedback):
+        """Add feedback to aggregator"""
+        if feedback.rating is not None:
+            self.recent_ratings.append(feedback.rating)
+        self.feedback_by_type[feedback.feedback_type].append(feedback)
+    
+    def get_average_rating(self) -> float:
+        """Get average rating from recent feedback"""
+        if not self.recent_ratings:
+            return 0.5
+        return statistics.mean(self.recent_ratings)
+    
+    def get_rating_trend(self) -> float:
+        """Calculate trend in ratings (positive = improving)"""
+        if len(self.recent_ratings) < 2:
+            return 0.0
+        
+        # Simple linear regression
+        recent = list(self.recent_ratings)
+        n = len(recent)
+        x = list(range(n))
+        
+        x_mean = statistics.mean(x)
+        y_mean = statistics.mean(recent)
+        
+        numerator = sum((x[i] - x_mean) * (recent[i] - y_mean) for i in range(n))
+        denominator = sum((x[i] - x_mean) ** 2 for i in range(n))
+        
+        if denominator == 0:
+            return 0.0
+        
+        slope = numerator / denominator
+        return slope
+    
+    def get_common_corrections(self, top_n: int = 5) -> List[Dict[str, Any]]:
+        """Get most common corrections from feedback"""
+        corrections_list = []
+        
+        for feedback_items in self.feedback_by_type.values():
+            for feedback in feedback_items:
+                if feedback.corrections:
+                    corrections_list.append(feedback.corrections)
+        
+        # Count correction types
+        correction_counts = defaultdict(int)
+        for correction in corrections_list:
+            for key in correction.keys():
+                correction_counts[key] += 1
+        
+        # Sort by frequency
+        sorted_corrections = sorted(
+            correction_counts.items(),
+            key=lambda x: x[1],
+            reverse=True
+        )
+        
+        return [
+            {'type': corr_type, 'count': count}
+            for corr_type, count in sorted_corrections[:top_n]
+        ]
+    
+    def get_sentiment_distribution(self) -> Dict[str, float]:
+        """Get distribution of feedback sentiments"""
+        sentiment_counts = defaultdict(int)
+        total = 0
+        
+        for feedback_items in self.feedback_by_type.values():
+            for feedback in feedback_items:
+                sentiment_counts[feedback.sentiment.value] += 1
+                total += 1
+        
+        if total == 0:
+            return {}
+        
+        return {
+            sentiment: count / total
+            for sentiment, count in sentiment_counts.items()
+        }
+
+class BehaviorAdapter:
+    """Adapts agent behavior based on feedback"""
+    
+    def __init__(self):
+        self.learned_patterns: Dict[str, Any] = {}
+        self.adaptation_rules: List[Callable] = []
+        self.parameter_adjustments: Dict[str, float] = defaultdict(float)
+        
+    def learn_from_feedback(self, feedback: Feedback, execution: ExecutionRecord):
+        """Learn from a single feedback item"""
+        
+        if feedback.feedback_type == FeedbackType.USER_CORRECTION:
+            self._learn_correction(feedback, execution)
+        
+        elif feedback.feedback_type == FeedbackType.USER_RATING:
+            self._adjust_confidence(feedback, execution)
+        
+        elif feedback.feedback_type == FeedbackType.SYSTEM_METRIC:
+            self._optimize_performance(feedback, execution)
+    
+    def _learn_correction(self, feedback: Feedback, execution: ExecutionRecord):
+        """Learn from user corrections"""
+        if not feedback.corrections:
+            return
+        
+        # Store pattern: task type -> correction
+        task_type = execution.context.get('task_type', 'general')
+        
+        if task_type not in self.learned_patterns:
+            self.learned_patterns[task_type] = []
+        
+        self.learned_patterns[task_type].append({
+            'original_output': execution.output,
+            'corrections': feedback.corrections,
+            'timestamp': feedback.timestamp
+        })
+    
+    def _adjust_confidence(self, feedback: Feedback, execution: ExecutionRecord):
+        """Adjust confidence thresholds based on rating"""
+        if feedback.rating is None:
+            return
+        
+        task_type = execution.context.get('task_type', 'general')
+        
+        # If low rating, increase caution
+        if feedback.rating < 0.5:
+            self.parameter_adjustments[f"{task_type}_min_confidence"] += 0.05
+        # If high rating, can be more confident
+        elif feedback.rating > 0.8:
+            self.parameter_adjustments[f"{task_type}_min_confidence"] -= 0.02
+    
+    def _optimize_performance(self, feedback: Feedback, execution: ExecutionRecord):
+        """Optimize based on performance metrics"""
+        if not feedback.metadata.get('metrics'):
+            return
+        
+        metrics = feedback.metadata['metrics']
+        
+        # Adjust parameters to improve metrics
+        if metrics.get('latency', 0) > 1.0:  # High latency
+            self.parameter_adjustments['max_iterations'] -= 1
+        
+        if metrics.get('accuracy', 1.0) < 0.7:  # Low accuracy
+            self.parameter_adjustments['temperature'] -= 0.1
+    
+    def apply_adaptations(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        """Apply learned adaptations to current context"""
+        adapted_context = context.copy()
+        
+        task_type = context.get('task_type', 'general')
+        
+        # Apply learned patterns
+        if task_type in self.learned_patterns:
+            patterns = self.learned_patterns[task_type]
+            adapted_context['learned_patterns'] = patterns[-5:]  # Last 5
+        
+        # Apply parameter adjustments
+        for param, adjustment in self.parameter_adjustments.items():
+            if param.startswith(task_type):
+                param_name = param.replace(f"{task_type}_", "")
+                current_value = adapted_context.get(param_name, 0.5)
+                adapted_context[param_name] = max(0.0, min(1.0, current_value + adjustment))
+        
+        return adapted_context
+
+class FeedbackLoopAgent:
+    """
+    Agent with continuous feedback loops for improvement
+    
+    Features:
+    - Multi-source feedback collection
+    - Automatic behavior adaptation
+    - Performance tracking
+    - Continuous learning
+    """
+    
+    def __init__(
+        self,
+        agent_id: str = "feedback_agent",
+        window_size: int = 100
+    ):
+        self.agent_id = agent_id
+        self.execution_history: Dict[str, ExecutionRecord] = {}
+        self.aggregator = FeedbackAggregator(window_size)
+        self.adapter = BehaviorAdapter()
+        self.improvement_history: List[ImprovementMetrics] = []
+        self.execution_counter = 0
+        
+    def execute_with_feedback(
+        self,
+        task: str,
+        context: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Execute task with feedback tracking
+        
+        Args:
+            task: Task to execute
+            context: Execution context
+            
+        Returns:
+            Result with execution ID for feedback
+        """
+        self.execution_counter += 1
+        execution_id = f"exec_{self.execution_counter}_{int(time.time())}"
+        
+        # Apply learned adaptations
+        adapted_context = self.adapter.apply_adaptations(context or {})
+        
+        # Execute task
+        start_time = time.time()
+        output = self._execute_task(task, adapted_context)
+        execution_time = time.time() - start_time
+        
+        # Record execution
+        record = ExecutionRecord(
+            execution_id=execution_id,
+            task=task,
+            output=output,
+            context=adapted_context,
+            timestamp=time.time(),
+            performance_metrics={
+                'execution_time': execution_time,
+                'context_adaptations': len(adapted_context) - len(context or {})
+            }
+        )
+        
+        self.execution_history[execution_id] = record
+        
+        return {
+            'execution_id': execution_id,
+            'output': output,
+            'request_feedback': True,
+            'adapted_parameters': adapted_context
+        }
+    
+    def process_feedback(
+        self,
+        execution_id: str,
+        feedback_type: FeedbackType,
+        rating: Optional[float] = None,
+        comment: Optional[str] = None,
+        corrections: Optional[Dict[str, Any]] = None,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        Process received feedback
+        
+        Args:
+            execution_id: ID of execution to provide feedback for
+            feedback_type: Type of feedback
+            rating: Optional rating (0.0 to 1.0)
+            comment: Optional comment
+            corrections: Optional corrections
+            metadata: Optional additional data
+            
+        Returns:
+            Feedback processing result
+        """
+        if execution_id not in self.execution_history:
+            return {'error': 'Execution ID not found'}
+        
+        # Determine sentiment
+        sentiment = self._determine_sentiment(rating, comment, corrections)
+        
+        # Create feedback object
+        feedback = Feedback(
+            feedback_id=f"fb_{len(self.aggregator.recent_ratings)}",
+            execution_id=execution_id,
+            feedback_type=feedback_type,
+            sentiment=sentiment,
+            rating=rating,
+            comment=comment,
+            corrections=corrections,
+            metadata=metadata or {}
+        )
+        
+        # Add to execution record
+        execution = self.execution_history[execution_id]
+        execution.feedback_items.append(feedback)
+        
+        # Aggregate feedback
+        self.aggregator.add_feedback(feedback)
+        
+        # Learn from feedback
+        self.adapter.learn_from_feedback(feedback, execution)
+        
+        return {
+            'feedback_id': feedback.feedback_id,
+            'processed': True,
+            'adaptations_applied': len(self.adapter.learned_patterns),
+            'current_avg_rating': self.aggregator.get_average_rating()
+        }
+    
+    def get_improvement_metrics(
+        self,
+        period_hours: float = 24.0
+    ) -> ImprovementMetrics:
+        """
+        Calculate improvement metrics for a time period
+        
+        Args:
+            period_hours: Time period to analyze
+            
+        Returns:
+            Improvement metrics
+        """
+        period_start = time.time() - (period_hours * 3600)
+        period_end = time.time()
+        
+        # Filter executions in period
+        period_executions = [
+            exec_rec for exec_rec in self.execution_history.values()
+            if period_start <= exec_rec.timestamp <= period_end
+        ]
+        
+        if not period_executions:
+            return ImprovementMetrics(
+                period_start=period_start,
+                period_end=period_end,
+                total_executions=0,
+                avg_rating=0.0,
+                rating_trend=0.0,
+                feedback_count=0,
+                corrections_applied=0
+            )
+        
+        # Calculate metrics
+        all_ratings = []
+        total_feedback = 0
+        corrections_count = 0
+        
+        for execution in period_executions:
+            for feedback in execution.feedback_items:
+                total_feedback += 1
+                if feedback.rating is not None:
+                    all_ratings.append(feedback.rating)
+                if feedback.corrections:
+                    corrections_count += 1
+        
+        avg_rating = statistics.mean(all_ratings) if all_ratings else 0.0
+        rating_trend = self.aggregator.get_rating_trend()
+        
+        # Performance improvements
+        performance_improvement = {}
+        if len(period_executions) > 1:
+            early_executions = period_executions[:len(period_executions)//2]
+            late_executions = period_executions[len(period_executions)//2:]
+            
+            early_time = statistics.mean(
+                e.performance_metrics.get('execution_time', 0)
+                for e in early_executions
+            )
+            late_time = statistics.mean(
+                e.performance_metrics.get('execution_time', 0)
+                for e in late_executions
+            )
+            
+            if early_time > 0:
+                performance_improvement['execution_time_reduction'] = (
+                    (early_time - late_time) / early_time
+                )
+        
+        metrics = ImprovementMetrics(
+            period_start=period_start,
+            period_end=period_end,
+            total_executions=len(period_executions),
+            avg_rating=avg_rating,
+            rating_trend=rating_trend,
+            feedback_count=total_feedback,
+            corrections_applied=corrections_count,
+            performance_improvement=performance_improvement
+        )
+        
+        self.improvement_history.append(metrics)
+        return metrics
+    
+    def _determine_sentiment(
+        self,
+        rating: Optional[float],
+        comment: Optional[str],
+        corrections: Optional[Dict[str, Any]]
+    ) -> FeedbackSentiment:
+        """Determine sentiment from feedback components"""
+        
+        # Rating-based sentiment
+        if rating is not None:
+            if rating >= 0.7:
+                return FeedbackSentiment.POSITIVE
+            elif rating <= 0.4:
+                return FeedbackSentiment.NEGATIVE
+        
+        # Corrections indicate issues
+        if corrections:
+            return FeedbackSentiment.NEGATIVE
+        
+        # Comment-based (simple keyword matching)
+        if comment:
+            comment_lower = comment.lower()
+            positive_words = ['good', 'great', 'excellent', 'perfect', 'correct']
+            negative_words = ['bad', 'wrong', 'incorrect', 'poor', 'error']
+            
+            if any(word in comment_lower for word in positive_words):
+                return FeedbackSentiment.POSITIVE
+            elif any(word in comment_lower for word in negative_words):
+                return FeedbackSentiment.NEGATIVE
+        
+        return FeedbackSentiment.NEUTRAL
+    
+    def _execute_task(self, task: str, context: Dict[str, Any]) -> str:
+        """Execute the actual task (simulated)"""
+        # In reality, this would call an LLM or other processing
+        
+        # Check for learned patterns
+        task_type = context.get('task_type', 'general')
+        if task_type in self.adapter.learned_patterns:
+            patterns = self.adapter.learned_patterns[task_type]
+            if patterns:
+                # Apply most recent correction
+                last_pattern = patterns[-1]
+                return f"Task result (improved based on feedback): {task} - Applied {len(patterns)} learned patterns"
+        
+        # Check confidence threshold
+        min_confidence = context.get('min_confidence', 0.5)
+        
+        result = f"Result for: {task}"
+        if min_confidence > 0.7:
+            result += " (high confidence mode)"
+        
+        return result
+    
+    def get_statistics(self) -> Dict[str, Any]:
+        """Get comprehensive statistics"""
+        
+        total_feedback = sum(
+            len(record.feedback_items)
+            for record in self.execution_history.values()
+        )
+        
+        sentiment_dist = self.aggregator.get_sentiment_distribution()
+        common_corrections = self.aggregator.get_common_corrections()
+        
+        return {
+            'total_executions': len(self.execution_history),
+            'total_feedback_items': total_feedback,
+            'avg_rating': self.aggregator.get_average_rating(),
+            'rating_trend': self.aggregator.get_rating_trend(),
+            'sentiment_distribution': sentiment_dist,
+            'common_corrections': common_corrections,
+            'learned_patterns': len(self.adapter.learned_patterns),
+            'parameter_adjustments': dict(self.adapter.parameter_adjustments),
+            'improvement_periods': len(self.improvement_history)
+        }
+
+
+def main():
+    """Demonstrate feedback loops pattern"""
+    print("=" * 60)
+    print("Feedback Loops Agent Demonstration")
+    print("=" * 60)
+    
+    # Create agent
+    agent = FeedbackLoopAgent()
+    
+    print("\n1. Initial Executions (Before Feedback)")
+    print("-" * 60)
+    
+    # Execute some tasks
+    tasks = [
+        ("Calculate 15 + 27", {'task_type': 'math'}),
+        ("Explain photosynthesis", {'task_type': 'explanation'}),
+        ("Translate 'hello' to Spanish", {'task_type': 'translation'}),
+    ]
+    
+    execution_ids = []
+    for task, context in tasks:
+        result = agent.execute_with_feedback(task, context)
+        execution_ids.append(result['execution_id'])
+        print(f"\nTask: {task}")
+        print(f"Output: {result['output']}")
+        print(f"Execution ID: {result['execution_id']}")
+    
+    print("\n" + "=" * 60)
+    print("2. Processing User Feedback")
+    print("=" * 60)
+    
+    # Provide various types of feedback
+    feedback_items = [
+        {
+            'execution_id': execution_ids[0],
+            'type': FeedbackType.USER_RATING,
+            'rating': 0.9,
+            'comment': "Great answer!"
+        },
+        {
+            'execution_id': execution_ids[1],
+            'type': FeedbackType.USER_CORRECTION,
+            'rating': 0.6,
+            'corrections': {'detail_level': 'add_more_examples'},
+            'comment': "Good but needs more examples"
+        },
+        {
+            'execution_id': execution_ids[2],
+            'type': FeedbackType.USER_RATING,
+            'rating': 0.3,
+            'comment': "Incorrect translation"
+        }
+    ]
+    
+    for feedback_item in feedback_items:
+        result = agent.process_feedback(
+            execution_id=feedback_item['execution_id'],
+            feedback_type=feedback_item['type'],
+            rating=feedback_item.get('rating'),
+            comment=feedback_item.get('comment'),
+            corrections=feedback_item.get('corrections')
+        )
+        print(f"\nFeedback processed: {result['feedback_id']}")
+        print(f"Adaptations applied: {result['adaptations_applied']}")
+        print(f"Current avg rating: {result['current_avg_rating']:.2f}")
+    
+    print("\n" + "=" * 60)
+    print("3. Re-executing Tasks (With Learned Adaptations)")
+    print("=" * 60)
+    
+    # Execute same tasks again to see improvements
+    for task, context in tasks[:2]:
+        result = agent.execute_with_feedback(task, context)
+        print(f"\nTask: {task}")
+        print(f"Output: {result['output']}")
+        print(f"Adapted parameters: {result.get('adapted_parameters', {}).keys()}")
+    
+    print("\n" + "=" * 60)
+    print("4. More Feedback (Building History)")
+    print("=" * 60)
+    
+    # Add more feedback
+    for i in range(5):
+        task = f"Task {i+4}"
+        result = agent.execute_with_feedback(task, {'task_type': 'general'})
+        
+        # Simulate improving ratings
+        rating = 0.5 + (i * 0.1)
+        agent.process_feedback(
+            execution_id=result['execution_id'],
+            feedback_type=FeedbackType.USER_RATING,
+            rating=rating
+        )
+    
+    print(f"\nAdded 5 more executions with improving ratings")
+    
+    print("\n" + "=" * 60)
+    print("5. Improvement Metrics")
+    print("=" * 60)
+    
+    metrics = agent.get_improvement_metrics(period_hours=1.0)
+    
+    print(f"\nPeriod: Last 1 hour")
+    print(f"Total Executions: {metrics.total_executions}")
+    print(f"Average Rating: {metrics.avg_rating:.2f}")
+    print(f"Rating Trend: {metrics.rating_trend:+.4f} (positive = improving)")
+    print(f"Feedback Count: {metrics.feedback_count}")
+    print(f"Corrections Applied: {metrics.corrections_applied}")
+    
+    if metrics.performance_improvement:
+        print("\nPerformance Improvements:")
+        for metric, improvement in metrics.performance_improvement.items():
+            print(f"  {metric}: {improvement:+.2%}")
+    
+    print("\n" + "=" * 60)
+    print("6. Overall Statistics")
+    print("=" * 60)
+    
+    stats = agent.get_statistics()
+    
+    print(f"\nTotal Executions: {stats['total_executions']}")
+    print(f"Total Feedback Items: {stats['total_feedback_items']}")
+    print(f"Average Rating: {stats['avg_rating']:.2f}")
+    print(f"Rating Trend: {stats['rating_trend']:+.4f}")
+    
+    print("\nSentiment Distribution:")
+    for sentiment, percentage in stats['sentiment_distribution'].items():
+        print(f"  {sentiment}: {percentage:.1%}")
+    
+    if stats['common_corrections']:
+        print("\nMost Common Corrections:")
+        for correction in stats['common_corrections']:
+            print(f"  {correction['type']}: {correction['count']} times")
+    
+    print(f"\nLearned Patterns (by type): {stats['learned_patterns']}")
+    
+    if stats['parameter_adjustments']:
+        print("\nParameter Adjustments:")
+        for param, adjustment in stats['parameter_adjustments'].items():
+            print(f"  {param}: {adjustment:+.3f}")
+    
+    print("\n" + "=" * 60)
+    print("Feedback Loops demonstration complete!")
+    print("=" * 60)
+
+
+if __name__ == "__main__":
+    main()
+```
+
+Now let me implement **Pattern 43: Multi-Criteria Evaluation**:
+
+```python patterns/43_multi_criteria_evaluation.py
+"""
+Pattern 43: Multi-Criteria Evaluation
+
+Description:
+    Evaluates agent outputs across multiple dimensions with configurable
+    weights and scoring methods to make holistic quality assessments.
+
+Use Cases:
+    - Complex decision-making with trade-offs
+    - Multi-objective optimization
+    - Comparing alternative solutions
+    - Quality assurance with multiple factors
+
+Key Features:
+    - Configurable evaluation criteria
+    - Weighted scoring system
+    - Pareto optimization support
+    - Trade-off analysis
+
+Example:
+    >>> evaluator = MultiCriteriaEvaluator()
+    >>> scores = evaluator.evaluate(output, criteria)
+    >>> best = evaluator.select_best([output1, output2, output3])
+"""
+
+from dataclasses import dataclass, field
+from typing import List, Dict, Any, Optional, Callable
+from enum import Enum
+import statistics
+
+class CriterionType(Enum):
+    """Types of evaluation criteria"""
+    MAXIMIZE = "maximize"  # Higher is better
+    MINIMIZE = "minimize"  # Lower is better
+    TARGET = "target"      # Closer to target is better
+
+class AggregationMethod(Enum):
+    """Methods for aggregating scores"""
+    WEIGHTED_SUM = "weighted_sum"
+    WEIGHTED_PRODUCT = "weighted_product"
+    MIN_MAX = "min_max"
+    PARETO = "pareto"
+
+@dataclass
+class EvaluationCriterion:
+    """Single evaluation criterion"""
+    name: str
+    description: str
+    criterion_type: CriterionType
+    weight: float = 1.0
+    target_value: Optional[float] = None
+    min_value: float = 0.0
+    max_value: float = 1.0
+    scoring_function: Optional[Callable[[Any], float]] = None
+
+@dataclass
+class CriterionScore:
+    """Score for a single criterion"""
+    criterion_name: str
+    raw_value: float
+    normalized_score: float  # 0.0 to 1.0
+    weighted_score: float
+    explanation: str = ""
+
+@dataclass
+class MultiCriteriaScore:
+    """Complete multi-criteria evaluation result"""
+    item_id: str
+    criterion_scores: Dict[str, CriterionScore]
+    aggregate_score: float
+    method: AggregationMethod
+    is_pareto_optimal: bool = False
+    dominated_by: List[str] = field(default_factory=list)
+    rank: Optional[int] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+@dataclass
+class TradeOffAnalysis:
+    """Analysis of trade-offs between criteria"""
+    improved_criteria: List[str]
+    degraded_criteria: List[str]
+    net_improvement: float
+    recommendation: str
+
+class MultiCriteriaEvaluator:
+    """
+    Evaluates items across multiple criteria
+    
+    Features:
+    - Flexible criterion definition
+    - Multiple aggregation methods
+    - Pareto optimization
+    - Trade-off analysis
+    """
+    
+    def __init__(
+        self,
+        criteria: Optional[List[EvaluationCriterion]] = None,
+        aggregation_method: AggregationMethod = AggregationMethod.WEIGHTED_SUM
+    ):
+        self.criteria = criteria or []
+        self.aggregation_method = aggregation_method
+        self.evaluation_history: List[MultiCriteriaScore] = []
+        
+    def add_criterion(self, criterion: EvaluationCriterion):
+        """Add an evaluation criterion"""
+        self.criteria.append(criterion)
+    
+    def evaluate(
+        self,
+        item: Any,
+        item_id: str,
+        custom_values: Optional[Dict[str, float]] = None
+    ) -> MultiCriteriaScore:
+        """
+        Evaluate an item across all criteria
+        
+        Args:
+            item: Item to evaluate
+            item_id: Unique identifier
+            custom_values: Optional pre-computed criterion values
+            
+        Returns:
+            Multi-criteria score
+        """
+        criterion_scores = {}
+        
+        for criterion in self.criteria:
+            # Get raw value
+            if custom_values and criterion.name in custom_values:
+                raw_value = custom_values[criterion.name]
+            elif criterion.scoring_function:
+                raw_value = criterion.scoring_function(item)
+            else:
+                raw_value = self._default_scoring(item, criterion)
+            
+            # Normalize score
+            normalized_score = self._normalize_score(
+                raw_value, criterion
+            )
+            
+            # Apply weight
+            weighted_score = normalized_score * criterion.weight
+            
+            # Create score object
+            criterion_scores[criterion.name] = CriterionScore(
+                criterion_name=criterion.name,
+                raw_value=raw_value,
+                normalized_score=normalized_score,
+                weighted_score=weighted_score,
+                explanation=self._explain_score(raw_value, criterion)
+            )
+        
+        # Aggregate scores
+        aggregate_score = self._aggregate_scores(
+            criterion_scores,
+            self.aggregation_method
+        )
+        
+        result = MultiCriteriaScore(
+            item_id=item_id,
+            criterion_scores=criterion_scores,
+            aggregate_score=aggregate_score,
+            method=self.aggregation_method,
+            metadata={'item': str(item)[:100]}
+        )
+        
+        self.evaluation_history.append(result)
+        return result
+    
+    def evaluate_batch(
+        self,
+        items: List[Dict[str, Any]]
+    ) -> List[MultiCriteriaScore]:
+        """
+        Evaluate multiple items
+        
+        Args:
+            items: List of {item_id, item, custom_values}
+            
+        Returns:
+            List of scores
+        """
+        scores = []
+        
+        for item_data in items:
+            score = self.evaluate(
+                item=item_data['item'],
+                item_id=item_data['item_id'],
+                custom_values=item_data.get('custom_values')
+            )
+            scores.append(score)
+        
+        # Identify Pareto optimal solutions
+        if self.aggregation_method == AggregationMethod.PARETO:
+            self._identify_pareto_optimal(scores)
+        
+        # Rank solutions
+        self._rank_solutions(scores)
+        
+        return scores
+    
+    def select_best(
+        self,
+        items: List[Dict[str, Any]],
+        top_n: int = 1
+    ) -> List[MultiCriteriaScore]:
+        """
+        Select best item(s) based on evaluation
+        
+        Args:
+            items: Items to evaluate
+            top_n: Number of top items to return
+            
+        Returns:
+        """
+        scores = self.evaluate_batch(items)
+        
+        # Sort by aggregate score (descending)
+        sorted_scores = sorted(
+            scores,
+            key=lambda x: x.aggregate_score,
+            reverse=True
+        )
+        
+        return sorted_scores[:top_n]
+    
+    def analyze_tradeoffs(
+        self,
+        item1_id: str,
+        item2_id: str
+    ) -> TradeOffAnalysis:
+        """
+        Analyze trade-offs between two evaluated items
+        
+        Args:
+            item1_id: First item ID
+            item2_id: Second item ID
+            
+        Returns:
+            Trade-off analysis
+        """
+        # Find scores
+        score1 = next(
+            (s for s in self.evaluation_history if s.item_id == item1_id),
+            None
+        )
+        score2 = next(
+            (s for s in self.evaluation_history if s.item_id == item2_id),
+            None
+        )
+        
+        if not score1 or not score2:
+            raise ValueError("Both items must be evaluated first")
+        
+        improved_criteria = []
+        degraded_criteria = []
+        net_improvement = 0.0
+        
+        for criterion_name in score1.criterion_scores.keys():
+            score1_val = score1.criterion_scores[criterion_name].normalized_score
+            score2_val = score2.criterion_scores[criterion_name].normalized_score
+            
+            diff = score2_val - score1_val
+            
+            if diff > 0.05:  # Significant improvement
+                improved_criteria.append(criterion_name)
+                net_improvement += diff
+            elif diff < -0.05:  # Significant degradation
+                degraded_criteria.append(criterion_name)
+                net_improvement += diff
+        
+        # Generate recommendation
+        if net_improvement > 0.1:
+            recommendation = f"Choose {item2_id}: Overall improvement of {net_improvement:.2%}"
+        elif net_improvement < -0.1:
+            recommendation = f"Choose {item1_id}: {item2_id} shows degradation of {-net_improvement:.2%}"
+        else:
+            recommendation = "Items are comparable; choose based on priority criteria"
+        
+        return TradeOffAnalysis(
+            improved_criteria=improved_criteria,
+            degraded_criteria=degraded_criteria,
+            net_improvement=net_improvement,
+            recommendation=recommendation
+        )
+    
+    def _normalize_score(
+        self,
+        raw_value: float,
+        criterion: EvaluationCriterion
+    ) -> float:
+        """Normalize score to 0-1 range"""
+        
+        if criterion.criterion_type == CriterionType.MAXIMIZE:
+            # Higher is better
+            if criterion.max_value == criterion.min_value:
+                return 1.0
+            normalized = (raw_value - criterion.min_value) / (
+                criterion.max_value - criterion.min_value
+            )
+            return max(0.0, min(1.0, normalized))
+        
+        elif criterion.criterion_type == CriterionType.MINIMIZE:
+            # Lower is better
+            if criterion.max_value == criterion.min_value:
+                return 1.0
+            normalized = (criterion.max_value - raw_value) / (
+                criterion.max_value - criterion.min_value
+            )
+            return max(0.0, min(1.0, normalized))
+        
+        elif criterion.criterion_type == CriterionType.TARGET:
+            # Closer to target is better
+            if criterion.target_value is None:
+                return 0.5
+            
+            distance = abs(raw_value - criterion.target_value)
+            max_distance = max(
+                abs(criterion.max_value - criterion.target_value),
+                abs(criterion.min_value - criterion.target_value)
+            )
+            
+            if max_distance == 0:
+                return 1.0
+            
+            normalized = 1.0 - (distance / max_distance)
+            return max(0.0, min(1.0, normalized))
+        
+        return 0.5
+    
+    def _aggregate_scores(
+        self,
+        criterion_scores: Dict[str, CriterionScore],
+        method: AggregationMethod
+    ) -> float:
+        """Aggregate criterion scores using specified method"""
+        
+        if not criterion_scores:
+            return 0.0
+        
+        if method == AggregationMethod.WEIGHTED_SUM:
+            total_weight = sum(
+                score.weighted_score
+                for score in criterion_scores.values()
+            )
+            weight_sum = sum(
+                self._get_criterion_weight(name)
+                for name in criterion_scores.keys()
+            )
+            return total_weight / weight_sum if weight_sum > 0 else 0.0
+        
+        elif method == AggregationMethod.WEIGHTED_PRODUCT:
+            product = 1.0
+            total_weight = 0.0
+            
+            for score in criterion_scores.values():
+                weight = self._get_criterion_weight(score.criterion_name)
+                product *= (score.normalized_score ** weight)
+                total_weight += weight
+            
+            return product ** (1.0 / total_weight) if total_weight > 0 else 0.0
+        
+        elif method == AggregationMethod.MIN_MAX:
+            # Return minimum score (conservative)
+            return min(
+                score.normalized_score
+                for score in criterion_scores.values()
+            )
+        
+        elif method == AggregationMethod.PARETO:
+            # For Pareto, use weighted sum but mark as needing Pareto analysis
+            return self._aggregate_scores(
+                criterion_scores,
+                AggregationMethod.WEIGHTED_SUM
+            )
+        
+        return 0.0
+    
+    def _identify_pareto_optimal(self, scores: List[MultiCriteriaScore]):
+        """Identify Pareto optimal solutions"""
+        
+        for i, score1 in enumerate(scores):
+            is_dominated = False
+            dominated_by = []
+            
+            for j, score2 in enumerate(scores):
+                if i == j:
+                    continue
+                
+                if self._dominates(score2, score1):
+                    is_dominated = True
+                    dominated_by.append(score2.item_id)
+            
+            score1.is_pareto_optimal = not is_dominated
+            score1.dominated_by = dominated_by
+    
+    def _dominates(
+        self,
+        score1: MultiCriteriaScore,
+        score2: MultiCriteriaScore
+    ) -> bool:
+        """Check if score1 Pareto-dominates score2"""
+        
+        at_least_one_better = False
+        
+        for criterion_name in score1.criterion_scores.keys():
+            val1 = score1.criterion_scores[criterion_name].normalized_score
+            val2 = score2.criterion_scores[criterion_name].normalized_score
+            
+            if val1 < val2:  # score1 is worse in this criterion
+                return False
+            elif val1 > val2:  # score1 is better in this criterion
+                at_least_one_better = True
+        
+        return at_least_one_better
+    
+    def _rank_solutions(self, scores: List[MultiCriteriaScore]):
+        """Assign ranks to solutions"""
+        sorted_scores = sorted(
+            scores,
+            key=lambda x: x.aggregate_score,
+            reverse=True
+        )
+        
+        for rank, score in enumerate(sorted_scores, 1):
+            score.rank = rank
+    
+    def _get_criterion_weight(self, criterion_name: str) -> float:
+        """Get weight for a criterion"""
+        for criterion in self.criteria:
+            if criterion.name == criterion_name:
+                return criterion.weight
+        return 1.0
+    
+    def _default_scoring(self, item: Any, criterion: EvaluationCriterion) -> float:
+        """Default scoring function"""
+        # Simple heuristic based on item attributes
+        if hasattr(item, criterion.name):
+            return float(getattr(item, criterion.name))
+        return 0.5
+    
+    def _explain_score(
+        self,
+        raw_value: float,
+        criterion: EvaluationCriterion
+    ) -> str:
+        """Generate explanation for score"""
+        
+        if criterion.criterion_type == CriterionType.MAXIMIZE:
+            return f"Raw value: {raw_value:.3f} (higher is better, max: {criterion.max_value})"
+        elif criterion.criterion_type == CriterionType.MINIMIZE:
+            return f"Raw value: {raw_value:.3f} (lower is better, min: {criterion.min_value})"
+        elif criterion.criterion_type == CriterionType.TARGET:
+            return f"Raw value: {raw_value:.3f} (target: {criterion.target_value})"
+        
+        return f"Raw value: {raw_value:.3f}"
+    
+    def get_criterion_rankings(self) -> Dict[str, List[str]]:
+        """Get item rankings for each criterion"""
+        rankings = {}
+        
+        for criterion in self.criteria:
+            # Sort by this criterion
+            sorted_items = sorted(
+                self.evaluation_history,
+                key=lambda x: x.criterion_scores[criterion.name].normalized_score,
+                reverse=True
+            )
+            rankings[criterion.name] = [item.item_id for item in sorted_items]
+        
+        return rankings
+    
+    def get_statistics(self) -> Dict[str, Any]:
+        """Get evaluation statistics"""
+        
+        if not self.evaluation_history:
+            return {'message': 'No evaluations performed yet'}
+        
+        # Overall statistics
+        aggregate_scores = [s.aggregate_score for s in self.evaluation_history]
+        
+        # Per-criterion statistics
+        criterion_stats = {}
+        for criterion in self.criteria:
+            scores = [
+                s.criterion_scores[criterion.name].normalized_score
+                for s in self.evaluation_history
+                if criterion.name in s.criterion_scores
+            ]
+            
+            if scores:
+                criterion_stats[criterion.name] = {
+                    'mean': statistics.mean(scores),
+                    'median': statistics.median(scores),
+                    'stdev': statistics.stdev(scores) if len(scores) > 1 else 0.0,
+                    'min': min(scores),
+                    'max': max(scores)
+                }
+        
+        # Pareto optimal count
+        pareto_count = sum(
+            1 for s in self.evaluation_history if s.is_pareto_optimal
+        )
+        
+        return {
+            'total_evaluations': len(self.evaluation_history),
+            'aggregation_method': self.aggregation_method.value,
+            'num_criteria': len(self.criteria),
+            'aggregate_score_stats': {
+                'mean': statistics.mean(aggregate_scores),
+                'median': statistics.median(aggregate_scores),
+                'min': min(aggregate_scores),
+                'max': max(aggregate_scores)
+            },
+            'criterion_statistics': criterion_stats,
+            'pareto_optimal_count': pareto_count,
+            'pareto_optimal_percentage': pareto_count / len(self.evaluation_history) * 100
+        }
+
+
+class LLMOutputEvaluator(MultiCriteriaEvaluator):
+    """
+    Specialized evaluator for LLM outputs
+    
+    Pre-configured with common LLM evaluation criteria
+    """
+    
+    def __init__(self):
+        criteria = [
+            EvaluationCriterion(
+                name="accuracy",
+                description="Factual correctness of the output",
+                criterion_type=CriterionType.MAXIMIZE,
+                weight=3.0,
+                min_value=0.0,
+                max_value=1.0
+            ),
+            EvaluationCriterion(
+                name="relevance",
+                description="How well output addresses the query",
+                criterion_type=CriterionType.MAXIMIZE,
+                weight=2.5,
+                min_value=0.0,
+                max_value=1.0
+            ),
+            EvaluationCriterion(
+                name="completeness",
+                description="Coverage of all required aspects",
+                criterion_type=CriterionType.MAXIMIZE,
+                weight=2.0,
+                min_value=0.0,
+                max_value=1.0
+            ),
+            EvaluationCriterion(
+                name="clarity",
+                description="Ease of understanding",
+                criterion_type=CriterionType.MAXIMIZE,
+                weight=1.5,
+                min_value=0.0,
+                max_value=1.0
+            ),
+            EvaluationCriterion(
+                name="conciseness",
+                description="Brevity without losing content",
+                criterion_type=CriterionType.MAXIMIZE,
+                weight=1.0,
+                min_value=0.0,
+                max_value=1.0
+            ),
+            EvaluationCriterion(
+                name="latency",
+                description="Response generation time",
+                criterion_type=CriterionType.MINIMIZE,
+                weight=1.0,
+                min_value=0.0,
+                max_value=10.0  # seconds
+            ),
+            EvaluationCriterion(
+                name="token_count",
+                description="Number of tokens used",
+                criterion_type=CriterionType.MINIMIZE,
+                weight=0.5,
+                min_value=0,
+                max_value=4000
+            )
+        ]
+        
+        super().__init__(criteria, AggregationMethod.WEIGHTED_SUM)
+
+
+def main():
+    """Demonstrate multi-criteria evaluation pattern"""
+    print("=" * 60)
+    print("Multi-Criteria Evaluation Demonstration")
+    print("=" * 60)
+    
+    # Create LLM output evaluator
+    evaluator = LLMOutputEvaluator()
+    
+    print("\n1. Evaluation Criteria")
+    print("-" * 60)
+    
+    for criterion in evaluator.criteria:
+        print(f"\n{criterion.name.upper()}")
+        print(f"  Description: {criterion.description}")
+        print(f"  Type: {criterion.criterion_type.value}")
+        print(f"  Weight: {criterion.weight}")
+        print(f"  Range: {criterion.min_value} - {criterion.max_value}")
+    
+    print("\n" + "=" * 60)
+    print("2. Evaluating Multiple LLM Outputs")
+    print("=" * 60)
+    
+    # Simulate different LLM outputs with varying characteristics
+    outputs = [
+        {
+            'item_id': 'output_1',
+            'item': 'Detailed and accurate response with examples',
+            'custom_values': {
+                'accuracy': 0.95,
+                'relevance': 0.90,
+                'completeness': 0.85,
+                'clarity': 0.80,
+                'conciseness': 0.60,  # Very detailed
+                'latency': 2.5,
+                'token_count': 800
+            }
+        },
+        {
+            'item_id': 'output_2',
+            'item': 'Concise but less complete response',
+            'custom_values': {
+                'accuracy': 0.85,
+                'relevance': 0.85,
+                'completeness': 0.65,
+                'clarity': 0.90,
+                'conciseness': 0.95,  # Very concise
+                'latency': 0.8,
+                'token_count': 200
+            }
+        },
+        {
+            'item_id': 'output_3',
+            'item': 'Balanced response',
+            'custom_values': {
+                'accuracy': 0.88,
+                'relevance': 0.92,
+                'completeness': 0.78,
+                'clarity': 0.85,
+                'conciseness': 0.75,
+                'latency': 1.5,
+                'token_count': 450
+            }
+        },
+        {
+            'item_id': 'output_4',
+            'item': 'Fast but less accurate',
+            'custom_values': {
+                'accuracy': 0.70,
+                'relevance': 0.75,
+                'completeness': 0.60,
+                'clarity': 0.75,
+                'conciseness': 0.85,
+                'latency': 0.5,
+                'token_count': 150
+            }
+        }
+    ]
+    
+    # Evaluate all outputs
+    scores = evaluator.evaluate_batch(outputs)
+    
+    print("\nEvaluation Results:")
+    print("-" * 60)
+    
+    for score in sorted(scores, key=lambda x: x.rank):
+        print(f"\n{score.item_id} (Rank #{score.rank})")
+        print(f"  Aggregate Score: {score.aggregate_score:.3f}")
+        print(f"  Pareto Optimal: {score.is_pareto_optimal}")
+        
+        print("  Criterion Scores:")
+        for criterion_name, criterion_score in score.criterion_scores.items():
+            print(f"    {criterion_name}: {criterion_score.normalized_score:.3f} "
+                  f"(weighted: {criterion_score.weighted_score:.3f})")
+    
+    print("\n" + "=" * 60)
+    print("3. Best Output Selection")
+    print("=" * 60)
+    
+    best = evaluator.select_best(outputs, top_n=1)[0]
+    
+    print(f"\nBest Output: {best.item_id}")
+    print(f"Aggregate Score: {best.aggregate_score:.3f}")
+    print(f"Item: {best.metadata['item']}")
+    
+    print("\nTop Criteria Scores:")
+    sorted_criteria = sorted(
+        best.criterion_scores.items(),
+        key=lambda x: x[1].normalized_score,
+        reverse=True
+    )
+    for criterion_name, criterion_score in sorted_criteria[:3]:
+        print(f"  {criterion_name}: {criterion_score.normalized_score:.3f}")
+        print(f"    {criterion_score.explanation}")
+    
+    print("\n" + "=" * 60)
+    print("4. Trade-off Analysis")
+    print("=" * 60)
+    
+    # Compare output_1 (detailed) vs output_2 (concise)
+    tradeoff = evaluator.analyze_tradeoffs('output_1', 'output_2')
+    
+    print(f"\nComparing: output_1 vs output_2")
+    print(f"\nImproved Criteria in output_2:")
+    for criterion in tradeoff.improved_criteria:
+        print(f"  - {criterion}")
+    
+    print(f"\nDegraded Criteria in output_2:")
+    for criterion in tradeoff.degraded_criteria:
+        print(f"  - {criterion}")
+    
+    print(f"\nNet Improvement: {tradeoff.net_improvement:+.3f}")
+    print(f"Recommendation: {tradeoff.recommendation}")
+    
+    print("\n" + "=" * 60)
+    print("5. Criterion Rankings")
+    print("=" * 60)
+    
+    rankings = evaluator.get_criterion_rankings()
+    
+    print("\nBest performers by criterion:")
+    for criterion_name, ranked_items in rankings.items():
+        print(f"\n{criterion_name}:")
+        for i, item_id in enumerate(ranked_items[:3], 1):
+            score = next(s for s in scores if s.item_id == item_id)
+            criterion_score = score.criterion_scores[criterion_name]
+            print(f"  {i}. {item_id}: {criterion_score.normalized_score:.3f}")
+    
+    print("\n" + "=" * 60)
+    print("6. Pareto Optimal Solutions")
+    print("=" * 60)
+    
+    pareto_optimal = [s for s in scores if s.is_pareto_optimal]
+    
+    print(f"\nPareto Optimal Solutions: {len(pareto_optimal)}")
+    for score in pareto_optimal:
+        print(f"\n{score.item_id}:")
+        print(f"  Aggregate Score: {score.aggregate_score:.3f}")
+        print(f"  Not dominated by any other solution")
+    
+    non_pareto = [s for s in scores if not s.is_pareto_optimal]
+    if non_pareto:
+        print(f"\nDominated Solutions:")
+        for score in non_pareto:
+            print(f"\n{score.item_id}:")
+            print(f"  Dominated by: {', '.join(score.dominated_by)}")
+    
+    print("\n" + "=" * 60)
+    print("7. Overall Statistics")
+    print("=" * 60)
+    
+    stats = evaluator.get_statistics()
+    
+    print(f"\nTotal Evaluations: {stats['total_evaluations']}")
+    print(f"Aggregation Method: {stats['aggregation_method']}")
+    print(f"Number of Criteria: {stats['num_criteria']}")
+    
+    print(f"\nAggregate Score Statistics:")
+    agg_stats = stats['aggregate_score_stats']
+    print(f"  Mean: {agg_stats['mean']:.3f}")
+    print(f"  Median: {agg_stats['median']:.3f}")
+    print(f"  Range: {agg_stats['min']:.3f} - {agg_stats['max']:.3f}")
+    
+    print(f"\nCriterion Statistics:")
+    for criterion_name, crit_stats in stats['criterion_statistics'].items():
+        print(f"\n  {criterion_name}:")
+        print(f"    Mean: {crit_stats['mean']:.3f}")
+        print(f"    Std Dev: {crit_stats['stdev']:.3f}")
+        print(f"    Range: {crit_stats['min']:.3f} - {crit_stats['max']:.3f}")
+    
+    print(f"\nPareto Optimal: {stats['pareto_optimal_count']} "
+          f"({stats['pareto_optimal_percentage']:.1f}%)")
+    
+    print("\n" + "=" * 60)
+    print("Multi-Criteria Evaluation demonstration complete!")
+    print("=" * 60)
+
+
+if __name__ == "__main__":
+    main()
+```
+
