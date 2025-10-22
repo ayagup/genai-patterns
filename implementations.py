@@ -12137,3 +12137,604 @@ if __name__ == "__main__":
         print("\n" + "="*80 + "\n")
 ```
 
+
+```
+43_rate_limiting.py
+
+Now let me create the final remaining high-priority patterns:
+
+```python patterns/43_rate_limiting.py
+"""
+Rate Limiting & Throttling Pattern
+Controls frequency of agent actions
+"""
+
+from typing import Dict, List, Optional
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from collections import deque
+import time
+
+class RateLimitStrategy(Enum):
+    FIXED_WINDOW = "fixed_window"
+    SLIDING_WINDOW = "sliding_window"
+    TOKEN_BUCKET = "token_bucket"
+    LEAKY_BUCKET = "leaky_bucket"
+
+@dataclass
+class RateLimitConfig:
+    """Rate limit configuration"""
+    max_requests: int
+    window_seconds: int
+    strategy: RateLimitStrategy = RateLimitStrategy.SLIDING_WINDOW
+    burst_size: Optional[int] = None  # For token bucket
+
+@dataclass
+class RequestRecord:
+    """Record of a request"""
+    timestamp: datetime
+    user_id: str
+    resource: str
+    allowed: bool
+
+class RateLimiter:
+    """Rate limiter implementation"""
+    
+    def __init__(self, config: RateLimitConfig):
+        self.config = config
+        self.requests: Dict[str, deque] = {}  # user_id -> request times
+        self.tokens: Dict[str, float] = {}  # For token bucket
+        self.last_refill: Dict[str, datetime] = {}
+        self.request_history: List[RequestRecord] = []
+    
+    def is_allowed(self, user_id: str, resource: str = "default") -> bool:
+        """Check if request is allowed"""
+        key = f"{user_id}:{resource}"
+        current_time = datetime.now()
+        
+        if self.config.strategy == RateLimitStrategy.SLIDING_WINDOW:
+            allowed = self._sliding_window_check(key, current_time)
+        elif self.config.strategy == RateLimitStrategy.TOKEN_BUCKET:
+            allowed = self._token_bucket_check(key, current_time)
+        elif self.config.strategy == RateLimitStrategy.FIXED_WINDOW:
+            allowed = self._fixed_window_check(key, current_time)
+        else:
+            allowed = True
+        
+        # Record request
+        self.request_history.append(RequestRecord(
+            timestamp=current_time,
+            user_id=user_id,
+            resource=resource,
+            allowed=allowed
+        ))
+        
+        return allowed
+    
+    def _sliding_window_check(self, key: str, current_time: datetime) -> bool:
+        """Sliding window rate limiting"""
+        if key not in self.requests:
+            self.requests[key] = deque()
+        
+        # Remove old requests outside window
+        window_start = current_time - timedelta(seconds=self.config.window_seconds)
+        
+        while self.requests[key] and self.requests[key][0] < window_start:
+            self.requests[key].popleft()
+        
+        # Check if under limit
+        if len(self.requests[key]) < self.config.max_requests:
+            self.requests[key].append(current_time)
+            return True
+        
+        return False
+    
+    def _token_bucket_check(self, key: str, current_time: datetime) -> bool:
+        """Token bucket rate limiting"""
+        if key not in self.tokens:
+            self.tokens[key] = self.config.burst_size or self.config.max_requests
+            self.last_refill[key] = current_time
+        
+        # Refill tokens
+        time_passed = (current_time - self.last_refill[key]).total_seconds()
+        refill_rate = self.config.max_requests / self.config.window_seconds
+        tokens_to_add = time_passed * refill_rate
+        
+        max_tokens = self.config.burst_size or self.config.max_requests
+        self.tokens[key] = min(max_tokens, self.tokens[key] + tokens_to_add)
+        self.last_refill[key] = current_time
+        
+        # Try to consume token
+        if self.tokens[key] >= 1.0:
+            self.tokens[key] -= 1.0
+            return True
+        
+        return False
+    
+    def _fixed_window_check(self, key: str, current_time: datetime) -> bool:
+        """Fixed window rate limiting"""
+        if key not in self.requests:
+            self.requests[key] = deque()
+        
+        # Calculate current window
+        window_start = datetime(
+            current_time.year,
+            current_time.month,
+            current_time.day,
+            current_time.hour,
+            current_time.minute // (self.config.window_seconds // 60),
+            0
+        )
+        
+        # Remove requests from previous windows
+        self.requests[key] = deque([
+            t for t in self.requests[key] if t >= window_start
+        ])
+        
+        # Check limit
+        if len(self.requests[key]) < self.config.max_requests:
+            self.requests[key].append(current_time)
+            return True
+        
+        return False
+    
+    def get_remaining(self, user_id: str, resource: str = "default") -> int:
+        """Get remaining requests for user"""
+        key = f"{user_id}:{resource}"
+        
+        if key not in self.requests:
+            return self.config.max_requests
+        
+        if self.config.strategy == RateLimitStrategy.TOKEN_BUCKET:
+            return int(self.tokens.get(key, 0))
+        else:
+            return self.config.max_requests - len(self.requests[key])
+    
+    def reset(self, user_id: str, resource: str = "default"):
+        """Reset rate limit for user"""
+        key = f"{user_id}:{resource}"
+        
+        if key in self.requests:
+            self.requests[key].clear()
+        if key in self.tokens:
+            self.tokens[key] = self.config.max_requests
+
+class RateLimitedAgent:
+    """Agent with rate limiting"""
+    
+    def __init__(self, agent_id: str):
+        self.agent_id = agent_id
+        
+        # Different rate limits for different operations
+        self.limiters = {
+            'query': RateLimiter(RateLimitConfig(
+                max_requests=10,
+                window_seconds=60,
+                strategy=RateLimitStrategy.SLIDING_WINDOW
+            )),
+            'expensive_operation': RateLimiter(RateLimitConfig(
+                max_requests=3,
+                window_seconds=60,
+                strategy=RateLimitStrategy.TOKEN_BUCKET,
+                burst_size=5
+            ))
+        }
+    
+    def process_request(self, user_id: str, operation: str, request: str) -> Dict[str, Any]:
+        """Process request with rate limiting"""
+        print(f"\n[{self.agent_id}] Processing {operation} for user {user_id}")
+        
+        limiter = self.limiters.get(operation, self.limiters['query'])
+        
+        # Check rate limit
+        if not limiter.is_allowed(user_id, operation):
+            remaining = limiter.get_remaining(user_id, operation)
+            
+            print(f"  ✗ Rate limit exceeded")
+            print(f"  Remaining: {remaining}")
+            
+            return {
+                'success': False,
+                'error': 'Rate limit exceeded',
+                'retry_after_seconds': limiter.config.window_seconds,
+                'remaining': remaining
+            }
+        
+        # Process request
+        remaining = limiter.get_remaining(user_id, operation)
+        
+        print(f"  ✓ Request allowed")
+        print(f"  Remaining: {remaining}")
+        
+        result = self._execute_operation(operation, request)
+        
+        return {
+            'success': True,
+            'result': result,
+            'remaining': remaining
+        }
+    
+    def _execute_operation(self, operation: str, request: str) -> Any:
+        """Execute the operation"""
+        import time
+        time.sleep(0.1)  # Simulate work
+        return f"Result for {operation}: {request}"
+    
+    def get_statistics(self) -> Dict[str, Any]:
+        """Get rate limiting statistics"""
+        stats = {}
+        
+        for name, limiter in self.limiters.items():
+            total = len(limiter.request_history)
+            allowed = sum(1 for r in limiter.request_history if r.allowed)
+            rejected = total - allowed
+            
+            stats[name] = {
+                'total_requests': total,
+                'allowed': allowed,
+                'rejected': rejected,
+                'rejection_rate': rejected / total if total > 0 else 0
+            }
+        
+        return stats
+
+
+# Usage
+if __name__ == "__main__":
+    print("="*80)
+    print("RATE LIMITING & THROTTLING PATTERN DEMONSTRATION")
+    print("="*80)
+    
+    agent = RateLimitedAgent("rate-limited-agent")
+    
+    # Simulate requests from user
+    user_id = "user_123"
+    
+    print("\nSimulating burst of requests...")
+    
+    # Test query rate limit (10 per minute)
+    for i in range(15):
+        result = agent.process_request(user_id, 'query', f"Query {i+1}")
+        
+        if not result['success']:
+            print(f"  Request {i+1}: BLOCKED - {result['error']}")
+        
+        time.sleep(0.1)
+    
+    print("\n" + "="*80)
+    print("\nTesting expensive operation limit (3 per minute with burst)...")
+    
+    # Test expensive operation limit
+    for i in range(8):
+        result = agent.process_request(user_id, 'expensive_operation', f"Expensive {i+1}")
+        time.sleep(0.2)
+    
+    # Statistics
+    print("\n" + "="*80)
+    print("RATE LIMITING STATISTICS")
+    print("="*80)
+    
+    stats = agent.get_statistics()
+    
+    for operation, stat in stats.items():
+        print(f"\n{operation}:")
+        print(f"  Total Requests: {stat['total_requests']}")
+        print(f"  Allowed: {stat['allowed']}")
+        print(f"  Rejected: {stat['rejected']}")
+        print(f"  Rejection Rate: {stat['rejection_rate']:.1%}")
+```
+
+
+```
+44_token_budget_management.py
+"""
+Token Budget Management Pattern
+Manages token usage within limits
+"""
+
+from typing import Dict, List, Any, Optional
+from dataclasses import dataclass
+from enum import Enum
+import time
+
+class TokenStrategy(Enum):
+    TRUNCATE = "truncate"
+    SUMMARIZE = "summarize"
+    COMPRESS = "compress"
+    PRIORITIZE = "prioritize"
+
+@dataclass
+class TokenUsage:
+    """Token usage record"""
+    operation: str
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    cost_usd: float
+    timestamp: float
+
+class TokenBudgetManager:
+    """Manages token budget and optimization"""
+    
+    def __init__(self, max_tokens_per_request: int = 4000, daily_budget_usd: float = 10.0):
+        self.max_tokens_per_request = max_tokens_per_request
+        self.daily_budget_usd = daily_budget_usd
+        self.usage_history: List[TokenUsage] = []
+        
+        # Pricing (example rates)
+        self.input_price_per_1k = 0.01  # $0.01 per 1K input tokens
+        self.output_price_per_1k = 0.03  # $0.03 per 1K output tokens
+    
+    def estimate_tokens(self, text: str) -> int:
+        """Estimate token count (rough approximation)"""
+        # Real implementation would use tiktoken or similar
+        # Rough estimate: ~4 characters per token
+        return len(text) // 4
+    
+    def check_budget(self, estimated_tokens: int) -> Dict[str, Any]:
+        """Check if operation is within budget"""
+        # Check per-request limit
+        if estimated_tokens > self.max_tokens_per_request:
+            return {
+                'allowed': False,
+                'reason': 'exceeds_per_request_limit',
+                'limit': self.max_tokens_per_request,
+                'estimated': estimated_tokens
+            }
+        
+        # Check daily budget
+        today_cost = self._get_today_cost()
+        estimated_cost = self._estimate_cost(estimated_tokens, estimated_tokens)
+        
+        if today_cost + estimated_cost > self.daily_budget_usd:
+            return {
+                'allowed': False,
+                'reason': 'exceeds_daily_budget',
+                'budget': self.daily_budget_usd,
+                'spent': today_cost,
+                'estimated_cost': estimated_cost
+            }
+        
+        return {
+            'allowed': True,
+            'estimated_tokens': estimated_tokens,
+            'estimated_cost': estimated_cost,
+            'remaining_budget': self.daily_budget_usd - today_cost
+        }
+    
+    def optimize_input(self, text: str, strategy: TokenStrategy = TokenStrategy.TRUNCATE) -> str:
+        """Optimize input to fit within budget"""
+        current_tokens = self.estimate_tokens(text)
+        
+        if current_tokens <= self.max_tokens_per_request:
+            return text
+        
+        print(f"\n[TokenManager] Input too large ({current_tokens} tokens), optimizing...")
+        
+        if strategy == TokenStrategy.TRUNCATE:
+            return self._truncate(text)
+        elif strategy == TokenStrategy.SUMMARIZE:
+            return self._summarize(text)
+        elif strategy == TokenStrategy.COMPRESS:
+            return self._compress(text)
+        elif strategy == TokenStrategy.PRIORITIZE:
+            return self._prioritize(text)
+        
+        return text
+    
+    def _truncate(self, text: str) -> str:
+        """Truncate text to fit budget"""
+        target_chars = self.max_tokens_per_request * 4  # Rough estimate
+        
+        if len(text) <= target_chars:
+            return text
+        
+        truncated = text[:target_chars] + "..."
+        print(f"  Strategy: TRUNCATE ({self.estimate_tokens(truncated)} tokens)")
+        
+        return truncated
+    
+    def _summarize(self, text: str) -> str:
+        """Summarize text to reduce tokens"""
+        # Simplified summarization (would use actual LLM)
+        sentences = text.split('.')
+        summary = '. '.join(sentences[:len(sentences)//2]) + "..."
+        
+        print(f"  Strategy: SUMMARIZE ({self.estimate_tokens(summary)} tokens)")
+        
+        return summary
+    
+    def _compress(self, text: str) -> str:
+        """Compress text by removing redundancy"""
+        # Simple compression: remove extra whitespace
+        compressed = ' '.join(text.split())
+        
+        print(f"  Strategy: COMPRESS ({self.estimate_tokens(compressed)} tokens)")
+        
+        return compressed
+    
+    def _prioritize(self, text: str) -> str:
+        """Keep most important parts"""
+        # Keep first and last parts (introduction and conclusion)
+        paragraphs = text.split('\n\n')
+        
+        if len(paragraphs) <= 2:
+            return text
+        
+        prioritized = paragraphs[0] + '\n\n...\n\n' + paragraphs[-1]
+        
+        print(f"  Strategy: PRIORITIZE ({self.estimate_tokens(prioritized)} tokens)")
+        
+        return prioritized
+    
+    def record_usage(self, operation: str, input_tokens: int, output_tokens: int):
+        """Record token usage"""
+        cost = self._estimate_cost(input_tokens, output_tokens)
+        
+        usage = TokenUsage(
+            operation=operation,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=input_tokens + output_tokens,
+            cost_usd=cost,
+            timestamp=time.time()
+        )
+        
+        self.usage_history.append(usage)
+        
+        print(f"\n[TokenManager] Recorded usage:")
+        print(f"  Input: {input_tokens} tokens")
+        print(f"  Output: {output_tokens} tokens")
+        print(f"  Cost: ${cost:.4f}")
+    
+    def _estimate_cost(self, input_tokens: int, output_tokens: int) -> float:
+        """Estimate cost of operation"""
+        input_cost = (input_tokens / 1000) * self.input_price_per_1k
+        output_cost = (output_tokens / 1000) * self.output_price_per_1k
+        
+        return input_cost + output_cost
+    
+    def _get_today_cost(self) -> float:
+        """Get today's total cost"""
+        import time
+        
+        # Get today's start timestamp
+        today_start = time.time() - (time.time() % 86400)  # Start of day
+        
+        today_usage = [
+            u for u in self.usage_history
+            if u.timestamp >= today_start
+        ]
+        
+        return sum(u.cost_usd for u in today_usage)
+    
+    def get_statistics(self) -> Dict[str, Any]:
+        """Get usage statistics"""
+        if not self.usage_history:
+            return {'total_operations': 0}
+        
+        total_input = sum(u.input_tokens for u in self.usage_history)
+        total_output = sum(u.output_tokens for u in self.usage_history)
+        total_cost = sum(u.cost_usd for u in self.usage_history)
+        
+        today_cost = self._get_today_cost()
+        
+        return {
+            'total_operations': len(self.usage_history),
+            'total_input_tokens': total_input,
+            'total_output_tokens': total_output,
+            'total_cost_usd': total_cost,
+            'today_cost_usd': today_cost,
+            'budget_remaining_usd': self.daily_budget_usd - today_cost,
+            'avg_tokens_per_operation': (total_input + total_output) / len(self.usage_history)
+        }
+
+class BudgetAwareAgent:
+    """Agent with token budget management"""
+    
+    def __init__(self, agent_id: str):
+        self.agent_id = agent_id
+        self.budget_manager = TokenBudgetManager(
+            max_tokens_per_request=2000,
+            daily_budget_usd=5.0
+        )
+    
+    def process(self, input_text: str, strategy: TokenStrategy = TokenStrategy.TRUNCATE) -> Dict[str, Any]:
+        """Process input with budget management"""
+        print(f"\n{'='*70}")
+        print(f"PROCESSING WITH BUDGET MANAGEMENT")
+        print(f"{'='*70}")
+        
+        # Estimate tokens
+        estimated_tokens = self.budget_manager.estimate_tokens(input_text)
+        print(f"\nInput length: {len(input_text)} chars")
+        print(f"Estimated tokens: {estimated_tokens}")
+        
+        # Check budget
+        budget_check = self.budget_manager.check_budget(estimated_tokens)
+        
+        if not budget_check['allowed']:
+            print(f"\n✗ Budget check failed: {budget_check['reason']}")
+            return {
+                'success': False,
+                'error': budget_check['reason'],
+                'details': budget_check
+            }
+        
+        print(f"\n✓ Budget check passed")
+        print(f"  Estimated cost: ${budget_check['estimated_cost']:.4f}")
+        print(f"  Remaining budget: ${budget_check['remaining_budget']:.2f}")
+        
+        # Optimize if needed
+        optimized_input = self.budget_manager.optimize_input(input_text, strategy)
+        
+        # Simulate processing
+        output = self._generate_output(optimized_input)
+        
+        # Record usage
+        input_tokens = self.budget_manager.estimate_tokens(optimized_input)
+        output_tokens = self.budget_manager.estimate_tokens(output)
+        
+        self.budget_manager.record_usage("process", input_tokens, output_tokens)
+        
+        return {
+            'success': True,
+            'output': output,
+            'input_tokens': input_tokens,
+            'output_tokens': output_tokens
+        }
+    
+    def _generate_output(self, input_text: str) -> str:
+        """Generate output (simulated)"""
+        # Simulate LLM generation
+        return f"Generated response based on: {input_text[:50]}..."
+
+
+# Usage
+if __name__ == "__main__":
+    print("="*80)
+    print("TOKEN BUDGET MANAGEMENT PATTERN DEMONSTRATION")
+    print("="*80)
+    
+    agent = BudgetAwareAgent("budget-agent-001")
+    
+    # Test 1: Normal input
+    print("\nTest 1: Normal Size Input")
+    print("-" * 70)
+    
+    normal_input = "This is a normal size input that should fit within budget. " * 10
+    
+    result1 = agent.process(normal_input)
+    
+    # Test 2: Large input requiring optimization
+    print("\n\n" + "="*80)
+    print("Test 2: Large Input Requiring Optimization")
+    print("-" * 70)
+    
+    large_input = "This is a very long input text that will exceed the token budget. " * 100
+    
+    result2 = agent.process(large_input, strategy=TokenStrategy.SUMMARIZE)
+    
+    # Test 3: Multiple operations to test daily budget
+    print("\n\n" + "="*80)
+    print("Test 3: Multiple Operations")
+    print("-" * 70)
+    
+    for i in range(5):
+        input_text = f"Operation {i+1}: " + ("Some text. " * 50)
+        agent.process(input_text, strategy=TokenStrategy.COMPRESS)
+    
+    # Statistics
+    stats = agent.budget_manager.get_statistics()
+    
+    print("\n" + "="*80)
+    print("BUDGET STATISTICS")
+    print("="*80)
+    print(f"Total Operations: {stats['total_operations']}")
+    print(f"Total Input Tokens: {stats['total_input_tokens']:,}")
+    print(f"Total Output Tokens: {stats['total_output_tokens']:,}")
+    print(f"Total Cost: ${stats['total_cost_usd']:.4f}")
+    print(f"Today's Cost: ${stats['today_cost_usd']:.4f}")
+    print(f"Remaining Budget: ${stats['budget_remaining_usd']:.2f}")
+    print(f"Avg Tokens/Operation: {stats['avg_tokens_per_operation']:.0f}")
+```
