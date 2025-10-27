@@ -57,6 +57,12 @@ def main():
         ("11_hierarchical_planning.py", "Hierarchical Planning"),
         ("12_metacognitive_monitoring.py", "Metacognitive Monitoring"),
         ("13_analogical_reasoning.py", "Analogical Reasoning"),
+        ("14_least_to_most.py", "Least-to-Most Prompting"),
+        ("15_constitutional_ai.py", "Constitutional AI"),
+        ("16_chain_of_verification.py", "Chain-of-Verification (CoVe)"),
+        ("17_advanced_rag.py", "Advanced RAG with Multi-hop Reasoning"),
+        ("18_advanced_memory.py", "Advanced Memory Patterns"),
+        ("19_tool_selection.py", "Dynamic Tool Selection"),
     ]
     
     results = []
@@ -69,7 +75,7 @@ def main():
     
     print("\n" + "─" * 80)
     print("\nOptions:")
-    print("  Enter a number (1-9) to run a specific example")
+    print("  Enter a number (1-19) to run a specific example")
     print("  Enter 'all' to run all examples")
     print("  Enter 'q' to quit")
     print()
