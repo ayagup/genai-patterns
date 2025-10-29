@@ -235,4 +235,63 @@ New Plan:"""
                 context[next_step.id] = result
                 
                 execution_log.append({
+                    'step_id': next_step.id,
+                    'description': next_step.description,
+                    'result': result,
+                    'status': 'completed'
+                })
+                
+                print(f"✓ Completed: {result[:100]}...")
+                
+                # Check if replanning is needed
+                if self.should_replan(next_step, result):
+                    print("⚠ Replanning required...")
+                    plan = self.replan(objective, 
+                                     [s for s in plan if s.id in completed_steps],
+                                     next_step, context)
+                    replanned = True
                     
+            except Exception as e:
+                next_step.status = StepStatus.FAILED
+                next_step.error = str(e)
+                execution_log.append({
+                    'step_id': next_step.id,
+                    'description': next_step.description,
+                    'error': str(e),
+                    'status': 'failed'
+                })
+                print(f"✗ Failed: {e}")
+                break
+        
+        return {
+            'objective': objective,
+            'plan': [{'id': s.id, 'description': s.description, 'dependencies': s.dependencies} 
+                    for s in plan],
+            'completed_steps': completed_steps,
+            'total_steps': len(plan),
+            'iterations': iteration,
+            'replanned': replanned,
+            'execution_log': execution_log,
+            'final_context': context,
+            'success': len(completed_steps) == len(plan)
+        }
+
+if __name__ == "__main__":
+    pae = PlanAndExecutePattern()
+    
+    objective = "Research and write a report on renewable energy sources"
+    
+    result = pae.execute_plan(objective)
+    
+    print("\n" + "="*60)
+    print("EXECUTION SUMMARY")
+    print("="*60)
+    print(f"Objective: {result['objective']}")
+    print(f"Total Steps: {result['total_steps']}")
+    print(f"Completed: {len(result['completed_steps'])}/{result['total_steps']}")
+    print(f"Success: {result['success']}")
+    print(f"Replanned: {result['replanned']}")
+    print(f"\nExecution Log:")
+    for log in result['execution_log']:
+        status = log.get('status', 'unknown')
+        print(f"  Step {log['step_id']}: {status.upper()}")
